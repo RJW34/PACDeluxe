@@ -16,11 +16,105 @@ static POPUP_COUNTER: AtomicU32 = AtomicU32::new(0);
 /// Performance overlay script injected into the game page
 const OVERLAY_SCRIPT: &str = r#"
 (function() {
+    'use strict';
+
+    // ============================================
+    // CHUNGUS MODE: Canvas Context Optimization
+    // ============================================
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function(type, options) {
+        options = options || {};
+
+        if (type === '2d') {
+            // Disable alpha channel - major performance gain
+            if (options.alpha === undefined) options.alpha = false;
+            // Enable low-latency mode (desynchronized rendering)
+            options.desynchronized = true;
+            // We won't read pixels back frequently
+            options.willReadFrequently = false;
+        }
+
+        if (type === 'webgl' || type === 'webgl2') {
+            // Disable antialiasing for performance
+            if (options.antialias === undefined) options.antialias = false;
+            // Request high-performance GPU
+            options.powerPreference = 'high-performance';
+            // Enable low-latency mode
+            options.desynchronized = true;
+            // Don't preserve drawing buffer (allows optimizations)
+            options.preserveDrawingBuffer = false;
+            // Disable premultiplied alpha for speed
+            options.premultipliedAlpha = false;
+            // Request stencil buffer only if needed
+            if (options.stencil === undefined) options.stencil = false;
+        }
+
+        console.log('[Chungus] Canvas context optimized:', type, options);
+        return originalGetContext.call(this, type, options);
+    };
+
+    // ============================================
+    // CHUNGUS MODE: Audio Context Low-Latency
+    // ============================================
+    const OriginalAudioContext = window.AudioContext || window.webkitAudioContext;
+    if (OriginalAudioContext) {
+        window.AudioContext = function(options) {
+            options = options || {};
+            options.latencyHint = 'interactive';
+            options.sampleRate = 44100;
+            console.log('[Chungus] AudioContext optimized:', options);
+            return new OriginalAudioContext(options);
+        };
+        window.AudioContext.prototype = OriginalAudioContext.prototype;
+    }
+
     // Wait for body to exist
     function init() {
         if (!document.body) {
             setTimeout(init, 50);
             return;
+        }
+
+        // === SCROLLBAR BUG FIX ===
+        // Upstream bug: body/root use width:100vw which includes scrollbar width,
+        // causing horizontal overflow and an unnecessary vertical scrollbar
+        // Fix: hide overflow on html element
+        const scrollbarFix = document.createElement('style');
+        scrollbarFix.textContent = 'html { overflow: hidden !important; }';
+        document.head.appendChild(scrollbarFix);
+        console.log('[PACDeluxe] Scrollbar fix applied');
+
+        // === FONT REPLACEMENT ===
+        // Replace Jost font with Orbitron for a more distinctive look
+        const fontLink = document.createElement('link');
+        fontLink.href = 'https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&display=swap';
+        fontLink.rel = 'stylesheet';
+        document.head.appendChild(fontLink);
+
+        const fontOverride = document.createElement('style');
+        fontOverride.textContent = `
+            html, body, button, input, select, textarea {
+                font-family: 'Orbitron', sans-serif !important;
+            }
+        `;
+        document.head.appendChild(fontOverride);
+        console.log('[PACDeluxe] Orbitron font applied');
+
+        // === CUSTOM BACKGROUND ===
+        // Replace homepage background with custom Grovyle image
+        if (window.__TAURI__) {
+            window.__TAURI__.core.invoke('get_background_image').then(bgDataUrl => {
+                const bgStyle = document.createElement('style');
+                bgStyle.textContent = `
+                    .custom-bg {
+                        background-image: url("${bgDataUrl}") !important;
+                    }
+                `;
+                document.head.appendChild(bgStyle);
+                console.log('[PACDeluxe] Custom background applied');
+            }).catch(e => {
+                console.log('[PACDeluxe] Custom background not available:', e);
+            });
         }
 
         // Create overlay element
@@ -153,6 +247,21 @@ const OVERLAY_SCRIPT: &str = r#"
 "#;
 
 fn main() {
+    // CHUNGUS MODE: Force GPU acceleration and advanced rendering features
+    // Must be set before any WebView2 initialization
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--enable-gpu-rasterization \
+         --enable-zero-copy \
+         --enable-features=Vulkan,CanvasOopRasterization \
+         --disable-gpu-driver-bug-workarounds \
+         --force-gpu-mem-available-mb=1024 \
+         --disable-background-timer-throttling \
+         --disable-backgrounding-occluded-windows \
+         --disable-renderer-backgrounding \
+         --autoplay-policy=no-user-gesture-required"
+    );
+
     // Initialize logging
     let subscriber = FmtSubscriber::builder()
         .with_max_level(if cfg!(debug_assertions) { Level::DEBUG } else { Level::INFO })
@@ -258,6 +367,7 @@ fn main() {
             commands::get_performance_stats,
             commands::get_system_info,
             commands::toggle_fullscreen,
+            commands::get_background_image,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run application");
