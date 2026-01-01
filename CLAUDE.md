@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Pokemon Auto Chess Deluxe — A native Windows 11 desktop client for the open-source browser game [pokemonAutoChess](https://github.com/keldaanCommunity/pokemonAutoChess) (the 8-player auto-battler). Focused purely on performance optimization without gameplay modification.
+**PACDeluxe** — A native Windows 11 desktop client for the open-source browser game [pokemonAutoChess](https://github.com/keldaanCommunity/pokemonAutoChess) (the 8-player auto-battler). Focused purely on performance optimization without gameplay modification.
+
+**GitHub:** https://github.com/RJW34/PACDeluxe
 
 ## CONTINUATION STATE (2026-01-01)
 

@@ -1,17 +1,17 @@
 [package]
-name = "pokemon-auto-chess-deluxe"
+name = "pac-deluxe"
 version = "1.0.0"
 description = "Native performance client for Pokemon Auto Chess"
-authors = ["Pokemon Auto Chess Deluxe Contributors"]
+authors = ["PACDeluxe Contributors"]
 edition = "2021"
 rust-version = "1.70"
 
 [lib]
-name = "pokemon_auto_chess_deluxe_lib"
+name = "pac_deluxe_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "pokemon-auto-chess-deluxe"
+name = "pac-deluxe"
 path = "src/main.rs"
 
 [build-dependencies]

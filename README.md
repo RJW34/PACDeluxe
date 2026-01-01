@@ -1,10 +1,10 @@
-# Pokemon Auto Chess Deluxe
+# PACDeluxe
 
-A native desktop client for [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) focused exclusively on performance optimization.
+A native Windows 11 desktop client for [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) (8-player auto-battler) focused exclusively on performance optimization.
 
 ## Overview
 
-Pokemon Auto Chess Deluxe is a native wrapper for the Pokemon Auto Chess browser game that provides:
+PACDeluxe is a native Tauri wrapper for the Pokemon Auto Chess browser game that provides:
 
 - **Smoother frame pacing** through native rendering optimizations
 - **Lower input latency** via high-priority event handling
@@ -70,8 +70,8 @@ All gameplay logic remains server-authoritative and unchanged.
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-repo/pokemon-auto-chess-deluxe
-cd pokemon-auto-chess-deluxe
+git clone https://github.com/RJW34/PACDeluxe
+cd PACDeluxe
 
 # Install dependencies
 npm install
@@ -124,9 +124,7 @@ npm test
 ## Configuration
 
 Configuration is stored in:
-- Windows: `%APPDATA%/pokemon-auto-chess-deluxe/config.json`
-- macOS: `~/Library/Application Support/pokemon-auto-chess-deluxe/config.json`
-- Linux: `~/.config/pokemon-auto-chess-deluxe/config.json`
+- Windows: `%APPDATA%/PACDeluxe/config.json`
 
 ### Options
 

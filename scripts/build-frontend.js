@@ -90,7 +90,7 @@ function createIndexHtml() {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="assets/ui/favicon.ico" />
-  <title>Pokemon Auto Chess Deluxe</title>
+  <title>PACDeluxe</title>
   <link rel="stylesheet" type="text/css" href="index.css" />
   <script src="index.js" defer></script>
 </head>
@@ -98,9 +98,9 @@ function createIndexHtml() {
   <div id="root"></div>
   <div id="modal-root"></div>
 
-  <!-- PAC Deluxe Performance Overlay (Ctrl+Shift+P to toggle) -->
+  <!-- PACDeluxe Performance Overlay (Ctrl+Shift+P to toggle) -->
   <div id="pac-perf" style="display:none;position:fixed;top:8px;right:8px;background:rgba(0,0,0,0.9);color:#0f0;font:12px/1.4 monospace;padding:10px 14px;border-radius:6px;z-index:99999;border:1px solid #0f04;min-width:140px;box-shadow:0 2px 10px rgba(0,0,0,0.5);">
-    <div style="color:#0f8;font-weight:bold;margin-bottom:6px;border-bottom:1px solid #0f03;padding-bottom:4px;">⚡ PAC Deluxe</div>
+    <div style="color:#0f8;font-weight:bold;margin-bottom:6px;border-bottom:1px solid #0f03;padding-bottom:4px;">⚡ PACDeluxe</div>
     <div>FPS: <span id="pac-fps">--</span></div>
     <div>CPU: <span id="pac-cpu">--</span>%</div>
     <div>MEM: <span id="pac-mem">--</span> MB</div>
@@ -153,7 +153,7 @@ function createIndexHtml() {
       }
     });
 
-    console.log('[PAC Deluxe] Performance overlay ready - press Ctrl+Shift+P to toggle');
+    console.log('[PACDeluxe] Performance overlay ready - press Ctrl+Shift+P to toggle');
   })();
   </script>
 </body>

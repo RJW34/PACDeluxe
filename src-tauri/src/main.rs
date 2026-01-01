@@ -15,7 +15,7 @@ fn main() {
         .finish();
     tracing::subscriber::set_global_default(subscriber).ok();
 
-    info!("Starting Pokemon Auto Chess Deluxe");
+    info!("Starting PACDeluxe");
 
     // Apply system optimizations
     performance::apply_system_optimizations();

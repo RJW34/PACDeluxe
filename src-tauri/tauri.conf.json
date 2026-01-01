@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Pokemon Auto Chess Deluxe",
+  "productName": "PACDeluxe",
   "version": "1.0.0",
-  "identifier": "com.pokemon-auto-chess-deluxe",
+  "identifier": "com.pacdeluxe",
   "build": {
     "beforeDevCommand": "npm run build:frontend",
     "beforeBuildCommand": "npm run build:frontend",
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "Pokemon Auto Chess Deluxe",
+        "title": "PACDeluxe",
         "width": 1280,
         "height": 900,
         "minWidth": 1024,
