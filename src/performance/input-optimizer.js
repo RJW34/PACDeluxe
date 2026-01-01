@@ -66,8 +66,121 @@ export class InputOptimizer {
     // Track latency for metrics
     this.installLatencyTracking();
 
+    // CHUNGUS MODE: Enhanced input handling
+    this.setupFastInputPath();
+    this.disableBrowserGestures();
+
     this.isInitialized = true;
     console.log('[InputOptimizer] Initialized with event coalescing and high-priority callbacks');
+    console.log('[Chungus] Fast input path configured');
+  }
+
+  /**
+   * CHUNGUS MODE: High-priority input fast path
+   */
+  setupFastInputPath() {
+    // Wait for canvas to exist
+    const setupCanvas = () => {
+      const gameCanvas = document.querySelector('canvas');
+      if (!gameCanvas) {
+        // Retry later if canvas not found yet
+        setTimeout(setupCanvas, 1000);
+        return;
+      }
+
+      // Use pointer events for lower latency (bypasses legacy mouse events)
+      // Enable pointer capture for smoother dragging
+      gameCanvas.addEventListener('pointerdown', (e) => {
+        if (e.button === 0) { // Left click
+          gameCanvas.setPointerCapture(e.pointerId);
+        }
+      }, { passive: true });
+
+      gameCanvas.addEventListener('pointerup', (e) => {
+        if (gameCanvas.hasPointerCapture(e.pointerId)) {
+          gameCanvas.releasePointerCapture(e.pointerId);
+        }
+      }, { passive: true });
+
+      // Use coalesced events API for batch processing
+      gameCanvas.addEventListener('pointermove', (e) => {
+        if (e.getCoalescedEvents) {
+          const coalescedEvents = e.getCoalescedEvents();
+          if (coalescedEvents.length > 1) {
+            this.coalescedCount += coalescedEvents.length - 1;
+          }
+        }
+      }, { passive: true });
+
+      console.log('[Chungus] Fast input path configured for canvas');
+    };
+
+    // Start trying to set up canvas
+    if (document.readyState === 'complete') {
+      setupCanvas();
+    } else {
+      window.addEventListener('load', setupCanvas);
+    }
+  }
+
+  /**
+   * CHUNGUS MODE: Disable browser's built-in gesture handling
+   */
+  disableBrowserGestures() {
+    document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
+    document.addEventListener('gesturechange', (e) => e.preventDefault(), { passive: false });
+    document.addEventListener('gestureend', (e) => e.preventDefault(), { passive: false });
+
+    // Wait for canvas to exist before adding context menu handler
+    const setupCanvasContextMenu = () => {
+      const canvas = document.querySelector('canvas');
+      if (canvas) {
+        // Disable context menu on canvas (right-click)
+        canvas.addEventListener('contextmenu', (e) => e.preventDefault(), { passive: false });
+        console.log('[Chungus] Browser gestures disabled for canvas');
+      } else {
+        setTimeout(setupCanvasContextMenu, 1000);
+      }
+    };
+
+    // Also disable dragging on images (prevents ghost images during drag)
+    const disableImageDrag = () => {
+      document.querySelectorAll('img').forEach(img => {
+        img.draggable = false;
+      });
+    };
+
+    if (document.readyState === 'complete') {
+      setupCanvasContextMenu();
+      disableImageDrag();
+    } else {
+      window.addEventListener('load', () => {
+        setupCanvasContextMenu();
+        disableImageDrag();
+      });
+    }
+
+    // Also observe for new images and disable their dragging
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeName === 'IMG') {
+            node.draggable = false;
+          } else if (node.querySelectorAll) {
+            node.querySelectorAll('img').forEach(img => {
+              img.draggable = false;
+            });
+          }
+        });
+      });
+    });
+
+    observer.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true
+    });
+
+    console.log('[Chungus] Browser gestures disabled');
   }
 
   /**

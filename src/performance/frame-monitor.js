@@ -9,6 +9,75 @@
  * requestAnimationFrame timing is controlled by the browser/WebView.
  */
 
+/**
+ * CHUNGUS MODE: Frame Time Histogram for percentile tracking
+ */
+class FrameHistogram {
+    constructor(maxMs = 100, bucketCount = 100) {
+        this.buckets = new Uint32Array(bucketCount);
+        this.maxMs = maxMs;
+        this.bucketSize = maxMs / bucketCount;
+        this.totalSamples = 0;
+        this.overflow = 0; // Frames > maxMs
+    }
+
+    /**
+     * Record a frame time
+     */
+    record(frameTimeMs) {
+        if (frameTimeMs >= this.maxMs) {
+            this.overflow++;
+        } else {
+            const bucket = Math.floor(frameTimeMs / this.bucketSize);
+            this.buckets[bucket]++;
+        }
+        this.totalSamples++;
+    }
+
+    /**
+     * Get the frame time at a given percentile (0-1)
+     */
+    percentile(p) {
+        if (this.totalSamples === 0) return 0;
+
+        const target = Math.floor(this.totalSamples * p);
+        let cumulative = 0;
+
+        for (let i = 0; i < this.buckets.length; i++) {
+            cumulative += this.buckets[i];
+            if (cumulative >= target) {
+                return (i + 0.5) * this.bucketSize; // Return bucket midpoint
+            }
+        }
+
+        // If we get here, it's in overflow
+        return this.maxMs;
+    }
+
+    /**
+     * Get common percentiles
+     */
+    getPercentiles() {
+        return {
+            p50: this.percentile(0.50),
+            p90: this.percentile(0.90),
+            p95: this.percentile(0.95),
+            p99: this.percentile(0.99),
+            overflow: this.overflow,
+            total: this.totalSamples,
+        };
+    }
+
+    /**
+     * Reset histogram
+     */
+    reset() {
+        this.buckets.fill(0);
+        this.totalSamples = 0;
+        this.overflow = 0;
+    }
+}
+
 export class FrameMonitor {
   constructor() {
     /** @type {number} */
@@ -38,6 +107,13 @@ export class FrameMonitor {
       totalFrames: 0,
       jitter: 0,
     };
+
+    // CHUNGUS MODE: Frame histogram for percentile tracking
+    this.histogram = new FrameHistogram(100, 100);
+
+    // CHUNGUS MODE: Stutter detection and logging
+    this.stutterLog = [];
+    this.stutterThreshold = 50; // ms - frames longer than this are "stutters"
   }
 
   /**
@@ -105,6 +181,14 @@ export class FrameMonitor {
       this.frameTimes.shift();
     }
 
+    // CHUNGUS MODE: Record to histogram
+    this.histogram.record(elapsed);
+
+    // CHUNGUS MODE: Detect and log stutters
+    if (elapsed > this.stutterThreshold) {
+      this.logStutter(elapsed, timestamp);
+    }
+
     // Calculate jitter (standard deviation of frame times)
     if (this.frameTimes.length > 1) {
       const avg =
@@ -129,6 +213,32 @@ export class FrameMonitor {
   }
 
   /**
+   * CHUNGUS MODE: Log stutter event with context
+   */
+  logStutter(frameTime, timestamp) {
+    const stutterEvent = {
+      timestamp: timestamp,
+      frameTime: frameTime,
+      time: new Date().toISOString(),
+    };
+
+    // Add memory info if available
+    if (performance.memory) {
+      stutterEvent.heapUsed = performance.memory.usedJSHeapSize;
+      stutterEvent.heapTotal = performance.memory.totalJSHeapSize;
+    }
+
+    this.stutterLog.push(stutterEvent);
+
+    // Keep only last 100 stutters
+    if (this.stutterLog.length > 100) {
+      this.stutterLog.shift();
+    }
+
+    console.warn(`[Chungus] Stutter detected: ${frameTime.toFixed(1)}ms`, stutterEvent);
+  }
+
+  /**
    * Get performance metrics
    * @returns {Object} Performance metrics
    */
@@ -141,6 +251,10 @@ export class FrameMonitor {
       currentFps: avgFrameTime > 0 ? 1000 / avgFrameTime : 0,
       avgFrameTime,
       frameCount: this.frameCount,
+      // CHUNGUS MODE additions
+      percentiles: this.histogram.getPercentiles(),
+      recentStutters: this.stutterLog.slice(-10),
+      stutterCount: this.stutterLog.length,
     };
   }
 
@@ -155,6 +269,9 @@ export class FrameMonitor {
     };
     this.frameTimes = [];
     this.frameCount = 0;
+    // CHUNGUS MODE: Reset histogram and stutter log
+    this.histogram.reset();
+    this.stutterLog = [];
   }
 }
 

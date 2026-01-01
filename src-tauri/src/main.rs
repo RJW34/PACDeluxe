@@ -247,6 +247,20 @@ const OVERLAY_SCRIPT: &str = r#"
 "#;
 
 fn main() {
+    // CHUNGUS MODE: Configure WebView2 user data folder for persistent cache
+    // This speeds up subsequent launches by preserving compiled JS and cache
+    if let Some(cache_dir) = dirs::cache_dir() {
+        let webview_cache = cache_dir.join("PACDeluxe").join("webview2-cache");
+
+        // Create directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&webview_cache) {
+            eprintln!("[Chungus] Failed to create WebView2 cache dir: {}", e);
+        } else {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", webview_cache.to_string_lossy().to_string());
+            println!("[Chungus] WebView2 cache: {:?}", webview_cache);
+        }
+    }
+
     // CHUNGUS MODE: Force GPU acceleration and advanced rendering features
     // Must be set before any WebView2 initialization
     std::env::set_var(

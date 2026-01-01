@@ -12,6 +12,65 @@ import { tauriBridge } from '../bridge/tauri-bridge.js';
 import { frameMonitor } from './frame-monitor.js';
 
 /**
+ * CHUNGUS MODE: Network Jitter Tracker
+ */
+class NetworkJitterTracker {
+    constructor(windowSize = 30) {
+        this.samples = [];
+        this.windowSize = windowSize;
+    }
+
+    addSample(rtt) {
+        this.samples.push({
+            rtt: rtt,
+            timestamp: performance.now(),
+        });
+
+        if (this.samples.length > this.windowSize) {
+            this.samples.shift();
+        }
+    }
+
+    /**
+     * Calculate jitter as mean absolute deviation between consecutive samples
+     */
+    getJitter() {
+        if (this.samples.length < 2) return 0;
+
+        let totalDiff = 0;
+        for (let i = 1; i < this.samples.length; i++) {
+            totalDiff += Math.abs(this.samples[i].rtt - this.samples[i - 1].rtt);
+        }
+
+        return totalDiff / (this.samples.length - 1);
+    }
+
+    /**
+     * Get min/max/avg RTT
+     */
+    getStats() {
+        if (this.samples.length === 0) {
+            return { min: 0, max: 0, avg: 0, jitter: 0, samples: 0 };
+        }
+
+        const rtts = this.samples.map(s => s.rtt);
+        const sum = rtts.reduce((a, b) => a + b, 0);
+
+        return {
+            min: Math.min(...rtts),
+            max: Math.max(...rtts),
+            avg: sum / rtts.length,
+            jitter: this.getJitter(),
+            samples: this.samples.length,
+        };
+    }
+
+    reset() {
+        this.samples = [];
+    }
+}
+
+/**
  * @typedef {Object} OverlayConfig
  * @property {boolean} showFps
  * @property {boolean} showFrameTime
@@ -52,6 +111,9 @@ export class ProfilingOverlay {
     this.lastNetworkCheck = 0;
     this.networkRtt = 0;
     this.rttCheckInterval = 5000; // Check RTT every 5 seconds
+
+    // CHUNGUS MODE: Network jitter tracker
+    this.jitterTracker = new NetworkJitterTracker(30);
   }
 
   /**
@@ -176,6 +238,10 @@ export class ProfilingOverlay {
           <span class="pac-label">Frame</span>
           <span class="pac-value">-- ms</span>
         </div>
+        <div class="pac-metric" id="pac-p99">
+          <span class="pac-label">p99</span>
+          <span class="pac-value">-- ms</span>
+        </div>
         <div class="pac-metric" id="pac-memory">
           <span class="pac-label">Memory</span>
           <span class="pac-value">-- MB</span>
@@ -193,6 +259,10 @@ export class ProfilingOverlay {
         </div>
         <div class="pac-metric" id="pac-dropped">
           <span class="pac-label">Dropped</span>
+          <span class="pac-value">0</span>
+        </div>
+        <div class="pac-metric" id="pac-stutters">
+          <span class="pac-label">Stutters</span>
           <span class="pac-value">0</span>
         </div>
       </div>
@@ -395,9 +465,27 @@ export class ProfilingOverlay {
       );
     }
 
-    // Update RTT
+    // CHUNGUS MODE: Update p99 frame time
+    if (frameMetrics.percentiles) {
+      const p99 = frameMetrics.percentiles.p99;
+      const p99Class = p99 < 20 ? 'good' : p99 < 33 ? 'warning' : 'bad';
+      this.updateMetric('pac-p99', `${p99.toFixed(1)} ms`, p99Class);
+    }
+
+    // CHUNGUS MODE: Update stutter count
+    if (typeof frameMetrics.stutterCount !== 'undefined') {
+      const stutterClass = frameMetrics.stutterCount === 0 ? 'good' : frameMetrics.stutterCount < 10 ? 'warning' : 'bad';
+      this.updateMetric('pac-stutters', `${frameMetrics.stutterCount}`, stutterClass);
+    }
+
+    // Update RTT with jitter
     const rtt = await this.measureRtt();
-    this.updateMetric('pac-network', `${rtt} ms`, rtt < 50 ? 'good' : rtt < 100 ? 'warning' : 'bad');
+    if (rtt > 0) {
+      this.jitterTracker.addSample(rtt);
+    }
+    const netStats = this.jitterTracker.getStats();
+    const rttDisplay = netStats.jitter > 0 ? `${rtt} ms (±${netStats.jitter.toFixed(1)})` : `${rtt} ms`;
+    this.updateMetric('pac-network', rttDisplay, rtt < 50 ? 'good' : rtt < 100 ? 'warning' : 'bad');
 
     // Update dropped frames
     this.updateMetric('pac-dropped', `${frameMetrics.droppedFrames}`);
