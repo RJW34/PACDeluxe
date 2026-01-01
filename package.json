@@ -1,0 +1,33 @@
+{
+  "name": "pokemon-auto-chess-deluxe",
+  "version": "1.0.0",
+  "description": "Native performance client for Pokemon Auto Chess",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "sync-upstream": "node scripts/sync-upstream.js",
+    "build:frontend": "node scripts/build-frontend.js",
+    "build:frontend:dev": "node scripts/build-frontend.js --dev",
+    "dev:server": "node scripts/dev-server.js",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "dev": "npm run tauri:dev",
+    "dev:static": "npm run build:frontend:dev && npm run tauri:dev -- --no-dev-server",
+    "build": "npm run build:frontend && npm run tauri:build",
+    "validate": "node scripts/validate-determinism.js",
+    "test": "node --test tests/*.test.js",
+    "lint": "biome lint src/"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "esbuild": "^0.24.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+target/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Rust
+Cargo.lock
+**/*.rs.bk
+
+# Tauri
+src-tauri/target/
+src-tauri/WixTools/
+src-tauri/icons/*.ico
+src-tauri/icons/*.icns
+src-tauri/icons/*.png
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Test outputs
+coverage/
+.nyc_output/
+
+# Validation
+validation/replays/*.json
+validation/reports/*.txt
+
+# Upstream (cloned separately)
+upstream-game/
+
+# Cache
+.cache/
+.parcel-cache/
+
+# Temporary
+*.tmp
+*.temp

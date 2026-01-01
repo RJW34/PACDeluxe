@@ -1,0 +1,49 @@
+[package]
+name = "pokemon-auto-chess-deluxe"
+version = "1.0.0"
+description = "Native performance client for Pokemon Auto Chess"
+authors = ["Pokemon Auto Chess Deluxe Contributors"]
+edition = "2021"
+rust-version = "1.70"
+
+[lib]
+name = "pokemon_auto_chess_deluxe_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "pokemon-auto-chess-deluxe"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+sysinfo = "0.31"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dwm",
+] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
