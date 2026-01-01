@@ -17,6 +17,67 @@ export { FrameMonitor, frameMonitor, getHighResTimestamp } from './performance/f
 export { InputOptimizer, inputOptimizer, requestHighPriorityCallback, getInputTimestamp } from './performance/input-optimizer.js';
 export { AssetCache, assetCache } from './performance/asset-cache.js';
 export { ProfilingOverlay, profilingOverlay } from './performance/profiling-overlay.js';
+export { AssetPrefetcher, assetPrefetcher, createAssetPrefetcher } from './performance/asset-prefetcher.js';
+
+// CHUNGUS MODE: Startup metrics tracking
+const startupMetrics = {
+    scriptStart: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+    events: [],
+};
+
+function logStartupEvent(name) {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    startupMetrics.events.push({
+        name,
+        time: now,
+        delta: now - startupMetrics.scriptStart,
+    });
+    console.log(`[Chungus Startup] ${name}: ${startupMetrics.events.at(-1).delta.toFixed(1)}ms`);
+}
+
+// Export for debugging
+if (typeof window !== 'undefined') {
+    window.__chungusStartupMetrics = startupMetrics;
+}
+
+/**
+ * CHUNGUS MODE: Prefetch DNS for game servers
+ */
+function prefetchGameDNS() {
+    const gameHosts = [
+        'pokemon-auto-chess.com',
+        'www.pokemon-auto-chess.com',
+        // Colyseus servers (common regions)
+        'us-west1-pokemon-auto-chess.colyseus.dev',
+        'us-east1-pokemon-auto-chess.colyseus.dev',
+        'europe-west1-pokemon-auto-chess.colyseus.dev',
+        // Firebase
+        'pokemon-auto-chess.firebaseapp.com',
+        'pokemon-auto-chess.web.app',
+        'firebaseinstallations.googleapis.com',
+        'identitytoolkit.googleapis.com',
+        // CDN / Assets
+        'fonts.googleapis.com',
+        'fonts.gstatic.com',
+    ];
+
+    gameHosts.forEach(host => {
+        // DNS prefetch hint
+        const dnsLink = document.createElement('link');
+        dnsLink.rel = 'dns-prefetch';
+        dnsLink.href = `//${host}`;
+        document.head.appendChild(dnsLink);
+
+        // Preconnect for likely connections
+        const preconnectLink = document.createElement('link');
+        preconnectLink.rel = 'preconnect';
+        preconnectLink.href = `https://${host}`;
+        preconnectLink.crossOrigin = 'anonymous';
+        document.head.appendChild(preconnectLink);
+    });
+
+    console.log(`[Chungus] DNS prefetched for ${gameHosts.length} hosts`);
+}
 
 // Bridge modules
 export { TauriBridge, tauriBridge, isTauri } from './bridge/tauri-bridge.js';
@@ -27,11 +88,19 @@ export { TauriBridge, tauriBridge, isTauri } from './bridge/tauri-bridge.js';
  */
 export async function initializePerformanceOptimizations(options = {}) {
   console.log('[PAC Deluxe] Initializing performance optimizations...');
+  logStartupEvent('Init start');
+
+  // CHUNGUS MODE: Prefetch DNS immediately
+  if (typeof document !== 'undefined') {
+    prefetchGameDNS();
+    logStartupEvent('DNS prefetch complete');
+  }
 
   const {
     enableFrameMonitor = true,
     enableInputOptimizer = true,
     enableAssetCache = true,
+    enableAssetPrefetcher = true,
     showProfilingOverlay = false,
   } = options;
 
@@ -40,6 +109,7 @@ export async function initializePerformanceOptimizations(options = {}) {
     frameMonitor: false,
     inputOptimizer: false,
     assetCache: false,
+    assetPrefetcher: false,
     profilingOverlay: false,
   };
 
@@ -85,8 +155,23 @@ export async function initializePerformanceOptimizations(options = {}) {
       const { inputOptimizer } = await import('./performance/input-optimizer.js');
       inputOptimizer.init();
       status.inputOptimizer = inputOptimizer.isInitialized;
+      logStartupEvent('Input optimizer initialized');
     } catch (error) {
       console.error('[PAC Deluxe] Input optimizer failed:', error.message);
+    }
+  }
+
+  // CHUNGUS MODE: Initialize asset prefetcher
+  if (enableAssetPrefetcher) {
+    try {
+      const { createAssetPrefetcher } = await import('./performance/asset-prefetcher.js');
+      const prefetcher = createAssetPrefetcher(status.assetCache ? (await import('./performance/asset-cache.js')).assetCache : null);
+      prefetcher.init();
+      status.assetPrefetcher = true;
+      logStartupEvent('Asset prefetcher initialized');
+      console.log('[Chungus] Asset prefetcher initialized');
+    } catch (error) {
+      console.warn('[Chungus] Asset prefetcher failed to initialize:', error.message);
     }
   }
 
