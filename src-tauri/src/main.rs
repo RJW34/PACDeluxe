@@ -21,35 +21,32 @@ const OVERLAY_SCRIPT: &str = r#"
     // ============================================
     // CHUNGUS MODE: Canvas Context Optimization
     // ============================================
+    // IMPORTANT: Only apply SAFE optimizations that won't break rendering
+    // Do NOT force alpha:false as the game may need transparency
     const originalGetContext = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function(type, options) {
         options = options || {};
 
         if (type === '2d') {
-            // Disable alpha channel - major performance gain
-            if (options.alpha === undefined) options.alpha = false;
-            // Enable low-latency mode (desynchronized rendering)
-            options.desynchronized = true;
-            // We won't read pixels back frequently
-            options.willReadFrequently = false;
+            // Enable low-latency mode (desynchronized rendering) - SAFE
+            if (options.desynchronized === undefined) options.desynchronized = true;
+            // NOTE: Do NOT set alpha:false - game may need transparency for layered rendering
+            // NOTE: Do NOT set willReadFrequently - let browser auto-detect
         }
 
         if (type === 'webgl' || type === 'webgl2') {
-            // Disable antialiasing for performance
+            // Request high-performance GPU - SAFE, just a hint
+            if (options.powerPreference === undefined) options.powerPreference = 'high-performance';
+            // Enable low-latency mode - SAFE
+            if (options.desynchronized === undefined) options.desynchronized = true;
+            // Only disable antialiasing if not explicitly requested - SAFE
             if (options.antialias === undefined) options.antialias = false;
-            // Request high-performance GPU
-            options.powerPreference = 'high-performance';
-            // Enable low-latency mode
-            options.desynchronized = true;
-            // Don't preserve drawing buffer (allows optimizations)
-            options.preserveDrawingBuffer = false;
-            // Disable premultiplied alpha for speed
-            options.premultipliedAlpha = false;
-            // Request stencil buffer only if needed
-            if (options.stencil === undefined) options.stencil = false;
+            // NOTE: Do NOT force preserveDrawingBuffer or premultipliedAlpha
+            // - game may read back pixels for screenshots/effects
+            // - premultipliedAlpha affects color blending
         }
 
-        console.log('[Chungus] Canvas context optimized:', type, options);
+        console.log('[Chungus] Canvas context hints applied:', type, options);
         return originalGetContext.call(this, type, options);
     };
 
@@ -163,9 +160,17 @@ const OVERLAY_SCRIPT: &str = r#"
 
         // Toggle overlay with Ctrl+Shift+P
         // Toggle fullscreen with F11
+        // NOTE: This is the primary overlay. The src/performance/*.js files are NOT
+        // loaded since we're viewing a remote site. This injected script IS the perf layer.
         document.addEventListener('keydown', async e => {
             if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p') {
                 e.preventDefault();
+                // Check if external overlay exists (from bundled JS)
+                if (window.__PAC_OVERLAY__ && typeof window.__PAC_OVERLAY__.toggle === 'function') {
+                    window.__PAC_OVERLAY__.toggle();
+                    return;
+                }
+                // Otherwise use this built-in overlay
                 visible = !visible;
                 overlay.style.display = visible ? 'block' : 'none';
                 if (visible) updateOverlay();

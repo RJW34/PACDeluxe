@@ -12,88 +12,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## CONTINUATION STATE (2026-01-01)
 
-### Current Status: LIVE TESTING IN PROGRESS
-The app compiles, launches, and user can log in via Google OAuth.
+### Current Status: TESTING RECENT FIXES
+App is running via `npm run tauri:dev`. User is testing fixes for blurriness and font changes.
+
+### Just Completed This Session:
+1. **Fixed blurriness** - Added missing `enable_dpi_awareness()` function to `performance.rs:66-86`
+   - The function was being called but never defined (causing WebView2 to render without DPI awareness)
+   - Now sets Per-Monitor DPI Awareness v2 for crisp rendering on high-DPI displays
+2. **Replaced Jost font with Orbitron** - Added to `main.rs:35-49`
+   - Injects Google Fonts Orbitron import
+   - Overrides font-family on html, body, button, input, select, textarea
+3. **Scrollbar fix** - Already in place from previous session (`main.rs:26-33`)
+   - Injects `html { overflow: hidden !important; }` to fix 100vw overflow bug
+
+### User Needs to Verify:
+1. **Sharpness** - Is content less blurry than before?
+2. **Font** - Does UI show Orbitron (geometric/techy) instead of Jost?
+3. **Scrollbar** - No unwanted vertical scrollbar on booster page?
 
 ### What's Working:
 1. **Tauri v2 shell** - Compiles and runs on Windows
 2. **Google OAuth login** - Works (passkeys don't work - known WebView2 limitation)
 3. **Performance optimizations applied:**
+   - Per-monitor DPI awareness v2 (NEW - fixes blurriness)
    - ABOVE_NORMAL_PRIORITY_CLASS for process
    - 1ms timer resolution (timeBeginPeriod)
    - DWM transitions disabled
    - Priority boost disabled for consistent timing
-   - **NEW: Power throttling disabled**
-   - **NEW: WebView2 child process priority elevation (background thread)**
-   - **NEW: Windows 11 DWM optimizations (no rounded corners, no mica)**
+   - Power throttling disabled
+   - WebView2 child process priority elevation (background thread)
+   - Windows 11 DWM optimizations (no rounded corners, no mica)
 4. **Performance overlay** - Toggle with Ctrl+Shift+P (FPS, CPU, Memory)
-5. **O(1) LRU asset cache** - Refactored from O(n) eviction
+5. **CSS Fixes injected** - Scrollbar fix, Orbitron font replacement
 
-### Known Issues (In Progress):
+### Known Issues:
 - **Auth popup doesn't auto-close** - `window.close()` not working in WebView2
-- **Windows Hello focus** - Passkey dialog doesn't come to foreground
 - **WebAuthn/Passkeys** - Not supported in WebView2 (use password login instead)
 
-### Debug Watcher Tool:
-**IMPORTANT:** A companion debug watcher exists at:
-```
-C:\Users\mtoli\Documents\Code\PacdeluxeDebugWatcher\
-```
-- Run a separate Claude session there for real-time monitoring
-- It tails logs, tracks processes, detects crashes
-- Coordinate with it during live testing sessions
-- Current Tauri dev log location (changes per session):
-  `C:\Users\mtoli\AppData\Local\Temp\claude\C--Users-mtoli-Documents-Code-pokemonautochessdeluxe\tasks\<task_id>.output`
-
-### Active Todo List:
-1. Fix auth popup not closing
-2. Add always-on-top for Windows Hello focus
-3. Verify WebView2 process priority elevation is working
-4. Test gameplay performance with overlay
-5. Monitor for memory leaks during extended play
-
-### Known Limitations:
-- **GPU monitoring** - Not available (would require vendor-specific SDKs)
-- **No frame pacing control** - WebView controls frame delivery via requestAnimationFrame
-- **No render optimization** - Cannot hook into Phaser without modifying upstream
-- **WebAuthn/Passkeys** - Fundamental WebView2 limitation, use password auth
-
-### Key Files (Simplified - Windows Only):
-```
-src-tauri/
-├── src/
-│   ├── main.rs         # Entry point, applies optimizations
-│   ├── lib.rs          # Module exports
-│   ├── performance.rs  # Windows perf APIs (priority, timer, DWM)
-│   └── commands.rs     # IPC: get_performance_stats, get_system_info
-├── Cargo.toml          # Minimal deps: tauri, sysinfo, windows
-└── tauri.conf.json     # Window config, CSP, bundle settings
-
-scripts/
-└── build-frontend.js   # Builds upstream, injects perf overlay
-
-dist/                   # Built frontend (gitignored)
-upstream-game/          # Cloned pokemonAutoChess (gitignored)
-```
+### Key Files Modified This Session:
+- `src-tauri/src/performance.rs` - Added `enable_dpi_awareness()` function
+- `src-tauri/src/main.rs` - Added Orbitron font injection to OVERLAY_SCRIPT
 
 ### Build Commands:
 ```bash
-# First time setup
-npm install
-npm run sync-upstream      # Clones pokemonAutoChess
-cd upstream-game && npm install && cd ..
-
-# Build and run
-npm run build:frontend     # Builds game + overlay
-npm run tauri:dev          # Run in dev mode
+npm run tauri:dev          # Run in dev mode (currently running)
 npm run tauri:build        # Release build (MSI/NSIS)
 ```
 
 ### Critical Notes:
-- **Windows 11 only** - No macOS/Linux code, simplified for one platform
+- **Windows 11 only** - No macOS/Linux code
 - **Game is multiplayer** - Requires internet for Firebase auth + Colyseus servers
-- **No VSync control** - Performance users typically disable VSync themselves
-- **Subagents available** - Use Task tool for parallel debugging/exploration
+- **Don't modify upstream-game/** - CSS fixes are injected via main.rs OVERLAY_SCRIPT
 
 ## Critical Constraints
 

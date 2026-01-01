@@ -42,24 +42,32 @@ if (typeof window !== 'undefined') {
 
 /**
  * CHUNGUS MODE: Prefetch DNS for game servers
+ * NOTE: Colyseus server hostnames are discovered dynamically when connecting.
+ * We prefetch the known static hosts (main site, Firebase, CDNs).
  */
 function prefetchGameDNS() {
+    // Only prefetch KNOWN hosts - don't guess at Colyseus server names
+    // The game discovers actual server endpoints at runtime
     const gameHosts = [
+        // Main game site
         'pokemon-auto-chess.com',
         'www.pokemon-auto-chess.com',
-        // Colyseus servers (common regions)
-        'us-west1-pokemon-auto-chess.colyseus.dev',
-        'us-east1-pokemon-auto-chess.colyseus.dev',
-        'europe-west1-pokemon-auto-chess.colyseus.dev',
-        // Firebase
+        // Firebase services (known hosts)
         'pokemon-auto-chess.firebaseapp.com',
         'pokemon-auto-chess.web.app',
         'firebaseinstallations.googleapis.com',
         'identitytoolkit.googleapis.com',
-        // CDN / Assets
+        'securetoken.googleapis.com',
+        'firestore.googleapis.com',
+        // CDN / Static assets (known hosts)
         'fonts.googleapis.com',
         'fonts.gstatic.com',
+        // Google OAuth
+        'accounts.google.com',
+        'apis.google.com',
     ];
+    // NOTE: Colyseus game servers use dynamic hostnames (e.g., regions)
+    // that are returned by the lobby API. We can't prefetch those.
 
     gameHosts.forEach(host => {
         // DNS prefetch hint

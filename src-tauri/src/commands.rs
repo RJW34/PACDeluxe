@@ -66,6 +66,38 @@ fn detect_gpu() -> Option<String> {
     None
 }
 
+/// Get custom background image as base64
+#[tauri::command]
+pub async fn get_background_image() -> Result<String, String> {
+    use std::io::Read;
+    use std::path::PathBuf;
+
+    // Try to find the asset in various locations
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe_path.parent().ok_or("No parent dir")?;
+
+    let possible_paths = [
+        exe_dir.join("assets").join("background.jpg"),
+        exe_dir.join("background.jpg"),
+        PathBuf::from("assets/background.jpg"),
+        PathBuf::from("src-tauri/assets/background.jpg"),
+    ];
+
+    for path in &possible_paths {
+        if path.exists() {
+            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+
+            use base64::{Engine, engine::general_purpose::STANDARD};
+            let encoded = STANDARD.encode(&buffer);
+            return Ok(format!("data:image/jpeg;base64,{}", encoded));
+        }
+    }
+
+    Err("Background image not found".to_string())
+}
+
 /// Toggle exclusive fullscreen mode
 #[tauri::command]
 pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
