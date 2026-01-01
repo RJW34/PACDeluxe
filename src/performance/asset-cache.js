@@ -4,6 +4,8 @@
  * Provides transparent caching for game assets by intercepting fetch() calls.
  * Caches static assets (images, JSON, audio) to reduce network requests.
  *
+ * Uses O(1) LRU eviction via doubly-linked list for optimal performance.
+ *
  * CRITICAL: This cache ONLY stores assets.
  * It does NOT modify, intercept, or manipulate game data.
  */
@@ -18,12 +20,14 @@
  */
 
 /**
- * @typedef {Object} CacheEntry
+ * Doubly-linked list node for O(1) LRU tracking
+ * @typedef {Object} LRUNode
  * @property {string} key
  * @property {Response} response
  * @property {number} size
- * @property {number} lastAccess
  * @property {number} accessCount
+ * @property {LRUNode|null} prev
+ * @property {LRUNode|null} next
  */
 
 // Asset URL patterns to cache (static resources only)
@@ -49,8 +53,23 @@ const NEVER_CACHE_PATTERNS = [
 
 export class AssetCache {
   constructor() {
-    /** @type {Map<string, CacheEntry>} */
+    /**
+     * Map for O(1) key lookup
+     * @type {Map<string, LRUNode>}
+     */
     this.cache = new Map();
+
+    /**
+     * LRU doubly-linked list head (least recently used)
+     * @type {LRUNode|null}
+     */
+    this.head = null;
+
+    /**
+     * LRU doubly-linked list tail (most recently used)
+     * @type {LRUNode|null}
+     */
+    this.tail = null;
 
     /** @type {number} */
     this.maxSizeBytes = 256 * 1024 * 1024; // 256 MB default
@@ -71,6 +90,59 @@ export class AssetCache {
       evictions: 0,
       bypassed: 0,
     };
+  }
+
+  /**
+   * Move a node to the tail (most recently used) - O(1)
+   * @param {LRUNode} node
+   */
+  _moveToTail(node) {
+    if (node === this.tail) return; // Already at tail
+
+    // Remove from current position
+    this._removeNode(node);
+
+    // Add to tail
+    this._addToTail(node);
+  }
+
+  /**
+   * Remove a node from the linked list - O(1)
+   * @param {LRUNode} node
+   */
+  _removeNode(node) {
+    if (node.prev) {
+      node.prev.next = node.next;
+    } else {
+      this.head = node.next;
+    }
+
+    if (node.next) {
+      node.next.prev = node.prev;
+    } else {
+      this.tail = node.prev;
+    }
+
+    node.prev = null;
+    node.next = null;
+  }
+
+  /**
+   * Add a node to the tail (most recently used) - O(1)
+   * @param {LRUNode} node
+   */
+  _addToTail(node) {
+    node.prev = this.tail;
+    node.next = null;
+
+    if (this.tail) {
+      this.tail.next = node;
+    }
+    this.tail = node;
+
+    if (!this.head) {
+      this.head = node;
+    }
   }
 
   /**
@@ -174,24 +246,25 @@ export class AssetCache {
   }
 
   /**
-   * Get an asset from cache
+   * Get an asset from cache - O(1)
    * @param {string} key
    * @returns {Response|null}
    */
   get(key) {
-    const entry = this.cache.get(key);
+    const node = this.cache.get(key);
 
-    if (entry) {
-      entry.lastAccess = Date.now();
-      entry.accessCount++;
-      return entry.response;
+    if (node) {
+      // Move to tail (most recently used) - O(1)
+      this._moveToTail(node);
+      node.accessCount++;
+      return node.response;
     }
 
     return null;
   }
 
   /**
-   * Store a response in cache
+   * Store a response in cache - O(1) amortized
    * @param {string} key
    * @param {Response} response
    */
@@ -201,26 +274,43 @@ export class AssetCache {
       const contentLength = response.headers.get('content-length');
       const size = contentLength ? parseInt(contentLength, 10) : 50000; // 50KB default estimate
 
-      // Evict if necessary
-      while (this.currentSizeBytes + size > this.maxSizeBytes && this.cache.size > 0) {
-        this.evictLRU();
-      }
-
       // Don't cache if single item exceeds limit
       if (size > this.maxSizeBytes) {
         console.warn(`[AssetCache] Asset too large to cache: ${key} (${size} bytes)`);
         return;
       }
 
-      const entry = {
+      // Evict if necessary - O(1) per eviction
+      while (this.currentSizeBytes + size > this.maxSizeBytes && this.cache.size > 0) {
+        this.evictLRU();
+      }
+
+      // If key already exists, update it
+      if (this.cache.has(key)) {
+        const existingNode = this.cache.get(key);
+        this.currentSizeBytes -= existingNode.size;
+        existingNode.response = response;
+        existingNode.size = size;
+        existingNode.accessCount = 1;
+        this._moveToTail(existingNode);
+        this.currentSizeBytes += size;
+        return;
+      }
+
+      // Create new node
+      /** @type {LRUNode} */
+      const node = {
         key,
         response,
         size,
-        lastAccess: Date.now(),
         accessCount: 1,
+        prev: null,
+        next: null,
       };
 
-      this.cache.set(key, entry);
+      // Add to cache and linked list
+      this.cache.set(key, node);
+      this._addToTail(node);
       this.currentSizeBytes += size;
     } catch (error) {
       console.warn('[AssetCache] Failed to cache:', key, error);
@@ -228,29 +318,26 @@ export class AssetCache {
   }
 
   /**
-   * Evict the least recently used entry
+   * Evict the least recently used entry - O(1)
+   * Removes from the head of the linked list (oldest)
    * @returns {boolean}
    */
   evictLRU() {
-    let oldest = null;
-    let oldestTime = Infinity;
-
-    for (const [key, entry] of this.cache) {
-      if (entry.lastAccess < oldestTime) {
-        oldest = key;
-        oldestTime = entry.lastAccess;
-      }
+    if (!this.head) {
+      return false;
     }
 
-    if (oldest) {
-      const entry = this.cache.get(oldest);
-      this.currentSizeBytes -= entry.size;
-      this.cache.delete(oldest);
-      this.stats.evictions++;
-      return true;
-    }
+    const node = this.head;
 
-    return false;
+    // Remove from linked list - O(1)
+    this._removeNode(node);
+
+    // Remove from map - O(1)
+    this.cache.delete(node.key);
+    this.currentSizeBytes -= node.size;
+    this.stats.evictions++;
+
+    return true;
   }
 
   /**
@@ -277,6 +364,8 @@ export class AssetCache {
    */
   clear() {
     this.cache.clear();
+    this.head = null;
+    this.tail = null;
     this.currentSizeBytes = 0;
     this.stats = { hits: 0, misses: 0, evictions: 0, bypassed: 0 };
     console.log('[AssetCache] Cache cleared');

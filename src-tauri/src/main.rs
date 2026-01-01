@@ -191,6 +191,9 @@ fn main() {
                 let label = format!("auth-popup-{}", popup_id);
                 debug!("Opening popup window: {} -> {}", label, url);
 
+                let app_handle_clone = app_handle.clone();
+                let label_clone = label.clone();
+
                 let popup = WebviewWindowBuilder::new(
                     &app_handle,
                     &label,
@@ -201,28 +204,31 @@ fn main() {
                 .inner_size(500.0, 600.0)
                 .center()
                 .focused(true)
+                .always_on_top(true)
                 // Close popup when Firebase auth callback completes
                 .on_navigation(|url| {
                     // Allow all navigation in auth popup
                     debug!("Auth popup navigating to: {}", url);
                     true
                 })
-                .on_page_load(|webview, payload| {
+                .on_page_load(move |_webview, payload| {
                     let url = payload.url().to_string();
                     debug!("Auth popup loaded: {}", url);
 
                     // Firebase auth callback URL pattern - close after auth completes
-                    if url.contains("/__/auth/handler") ||
-                       url.contains("firebaseapp.com") && url.contains("__/auth") {
-                        // Inject script to close window after Firebase processes the auth
-                        let _ = webview.eval(r#"
-                            (function() {
-                                // Wait for Firebase to process, then close
-                                setTimeout(function() {
-                                    window.close();
-                                }, 1000);
-                            })();
-                        "#);
+                    // Check for the callback with auth code (successful login)
+                    if url.contains("/__/auth/handler") && url.contains("code=") {
+                        debug!("Auth complete, closing popup via Rust");
+                        // Close from Rust side - window.close() doesn't work in WebView2
+                        let app = app_handle_clone.clone();
+                        let label = label_clone.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            if let Some(win) = app.get_webview_window(&label) {
+                                let _ = win.close();
+                                debug!("Popup {} closed", label);
+                            }
+                        });
                     }
                 })
                 .build();
