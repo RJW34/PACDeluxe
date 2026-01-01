@@ -8,6 +8,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **GitHub:** https://github.com/RJW34/PACDeluxe
 
+---
+
+## TRIGGER: "plugins go"
+
+When the user says **"plugins go"**, respond with:
+
+```
+Ready to set up plugins for PACDeluxe. Please run these commands:
+
+1. /plugin install rust-analyzer-lsp@claude-plugins-official
+2. /plugin install context7@claude-plugins-official
+3. /plugin install frontend-design@claude-plugins-official
+
+After installing, restart Claude CLI with: claude --resume
+
+Then say "ready" to continue where we left off.
+```
+
+---
+
 ## CONTINUATION STATE (2026-01-01)
 
 ### Current Status: BUILDS AND RUNS
