@@ -60,23 +60,59 @@ impl Default for PerformanceMonitor {
 /// Flag to track if WebView2 optimization thread is running
 static WEBVIEW_OPTIMIZER_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// Flag to signal the optimizer thread to stop
+static WEBVIEW_OPTIMIZER_STOP: AtomicBool = AtomicBool::new(false);
+
+/// Enable per-monitor DPI awareness for crisp rendering on high-DPI displays
+/// This MUST be called before any window creation
+fn enable_dpi_awareness() {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+
+    unsafe {
+        // Per-monitor DPI awareness v2 is the best option for WebView2
+        // It ensures content renders at native resolution on each monitor
+        match SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) {
+            Ok(_) => {
+                info!("Enabled per-monitor DPI awareness v2");
+            }
+            Err(e) => {
+                // This can fail if already set (e.g., via manifest) - that's fine
+                debug!("DPI awareness already set or failed: {:?}", e);
+            }
+        }
+    }
+}
+
 /// Apply Windows system optimizations
 pub fn apply_system_optimizations() {
     info!("Applying Windows performance optimizations");
+    info!("[Chungus] Applying system optimizations...");
+
+    // Enable per-monitor DPI awareness for crisp rendering on high-DPI displays
+    // This MUST be called before any window creation
+    enable_dpi_awareness();
 
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, SetPriorityClass, SetProcessPriorityBoost,
-        ABOVE_NORMAL_PRIORITY_CLASS,
+        GetCurrentProcess, GetCurrentThread, SetPriorityClass, SetProcessPriorityBoost,
+        SetThreadPriority, SetThreadPriorityBoost,
+        ABOVE_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, THREAD_PRIORITY_HIGHEST,
     };
 
     unsafe {
         let process = GetCurrentProcess();
 
-        // Set above-normal priority
-        if let Err(e) = SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) {
-            warn!("Failed to set process priority: {:?}", e);
+        // CHUNGUS MODE: Set process priority class to HIGH (one below REALTIME)
+        if SetPriorityClass(process, HIGH_PRIORITY_CLASS).is_err() {
+            warn!("[Chungus] Failed to set HIGH_PRIORITY_CLASS, trying ABOVE_NORMAL");
+            if let Err(e) = SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) {
+                warn!("Failed to set process priority: {:?}", e);
+            } else {
+                debug!("Set process priority to above normal");
+            }
         } else {
-            debug!("Set process priority to above normal");
+            info!("[Chungus] Process priority elevated to HIGH");
         }
 
         // Disable priority boost for consistent timing
@@ -85,10 +121,22 @@ pub fn apply_system_optimizations() {
         } else {
             debug!("Disabled priority boost");
         }
+
+        // CHUNGUS MODE: Set thread QoS
+        let thread = GetCurrentThread();
+        let _ = SetThreadPriority(thread, THREAD_PRIORITY_HIGHEST);
+        let _ = SetThreadPriorityBoost(thread, true);
+        info!("[Chungus] Thread QoS configured");
     }
+
+    // CHUNGUS MODE: Disable CPU core parking
+    disable_core_parking();
 
     // Disable power throttling for consistent performance
     disable_power_throttling();
+
+    // CHUNGUS MODE: Memory optimizations
+    lock_working_set();
 
     // Enable 1ms timer resolution
     #[link(name = "winmm")]
@@ -100,11 +148,86 @@ pub fn apply_system_optimizations() {
         if timeBeginPeriod(1) == 0 {
             debug!("Enabled 1ms timer resolution");
             register_timer_cleanup();
+            register_panic_hook_for_timer();
         }
     }
 
     // Start background thread to optimize WebView2 child processes
     start_webview_optimizer();
+
+    info!("[Chungus] System optimizations applied");
+}
+
+/// CHUNGUS MODE: Disable CPU core parking for consistent performance
+fn disable_core_parking() {
+    use std::process::Command;
+
+    // Use powercfg to disable core parking on the active power scheme
+    // This is the most reliable cross-system method
+    let commands = [
+        // Disable core parking (100 = 100% cores always active)
+        ("powercfg", vec!["-setacvalueindex", "scheme_current", "sub_processor", "CPMINCORES", "100"]),
+        ("powercfg", vec!["-setdcvalueindex", "scheme_current", "sub_processor", "CPMINCORES", "100"]),
+        // Set minimum processor state to 100%
+        ("powercfg", vec!["-setacvalueindex", "scheme_current", "sub_processor", "PROCTHROTTLEMIN", "100"]),
+        ("powercfg", vec!["-setdcvalueindex", "scheme_current", "sub_processor", "PROCTHROTTLEMIN", "100"]),
+        // Apply changes
+        ("powercfg", vec!["-setactive", "scheme_current"]),
+    ];
+
+    for (cmd, args) in commands {
+        match Command::new(cmd).args(&args).output() {
+            Ok(output) => {
+                if !output.status.success() {
+                    debug!(
+                        "[Chungus] powercfg command note: {} {:?}",
+                        cmd,
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+            }
+            Err(e) => {
+                debug!("[Chungus] Failed to run powercfg: {}", e);
+            }
+        }
+    }
+
+    info!("[Chungus] Core parking disabled");
+}
+
+/// CHUNGUS MODE: Lock process working set to prevent paging
+fn lock_working_set() {
+    use windows::Win32::System::Memory::{
+        SetProcessWorkingSetSizeEx,
+        QUOTA_LIMITS_HARDWS_MIN_ENABLE, QUOTA_LIMITS_HARDWS_MAX_DISABLE,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    unsafe {
+        let process = GetCurrentProcess();
+
+        // Set minimum working set to 256MB, maximum to 1GB
+        let min_size = 256 * 1024 * 1024; // 256 MB
+        let max_size = 1024 * 1024 * 1024; // 1 GB
+
+        match SetProcessWorkingSetSizeEx(
+            process,
+            min_size,
+            max_size,
+            QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE,
+        ) {
+            Ok(_) => {
+                info!(
+                    "[Chungus] Working set locked: min={}MB, max={}MB",
+                    min_size / 1024 / 1024,
+                    max_size / 1024 / 1024
+                );
+            }
+            Err(e) => {
+                debug!("[Chungus] Failed to lock working set: {:?}", e);
+            }
+        }
+    }
 }
 
 /// Disable Windows power throttling for the current process
@@ -149,13 +272,24 @@ fn start_webview_optimizer() {
         return;
     }
 
+    // Reset stop flag
+    WEBVIEW_OPTIMIZER_STOP.store(false, Ordering::SeqCst);
+
     std::thread::spawn(|| {
         // Wait for WebView2 to spawn
         std::thread::sleep(std::time::Duration::from_secs(2));
 
         let mut optimized_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut cleanup_counter: u32 = 0;
 
-        loop {
+        while !WEBVIEW_OPTIMIZER_STOP.load(Ordering::Relaxed) {
+            // Periodically clean up dead PIDs to prevent memory leak
+            cleanup_counter += 1;
+            if cleanup_counter >= 12 {  // Every ~60 seconds (12 * 5s)
+                cleanup_dead_pids(&mut optimized_pids);
+                cleanup_counter = 0;
+            }
+
             if let Some(new_pids) = elevate_webview2_processes(&optimized_pids) {
                 for pid in new_pids {
                     optimized_pids.insert(pid);
@@ -165,9 +299,43 @@ fn start_webview_optimizer() {
             // Check every 5 seconds for new WebView2 processes
             std::thread::sleep(std::time::Duration::from_secs(5));
         }
+
+        debug!("WebView2 optimizer thread stopped");
+        WEBVIEW_OPTIMIZER_RUNNING.store(false, Ordering::SeqCst);
     });
 
     debug!("Started WebView2 optimizer thread");
+}
+
+/// Clean up PIDs of processes that no longer exist
+fn cleanup_dead_pids(pids: &mut std::collections::HashSet<u32>) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    let original_count = pids.len();
+
+    pids.retain(|&pid| {
+        unsafe {
+            // Try to open the process - if it fails, the process is gone
+            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(handle) => {
+                    let _ = CloseHandle(handle);
+                    true  // Process exists, keep it
+                }
+                Err(_) => false  // Process gone, remove it
+            }
+        }
+    });
+
+    let removed = original_count - pids.len();
+    if removed > 0 {
+        debug!("Cleaned up {} dead PID(s) from optimizer cache", removed);
+    }
+}
+
+/// Signal the optimizer thread to stop (call on app shutdown)
+pub fn stop_webview_optimizer() {
+    WEBVIEW_OPTIMIZER_STOP.store(true, Ordering::SeqCst);
 }
 
 /// Find and elevate WebView2 child processes
@@ -320,6 +488,33 @@ fn register_timer_cleanup() {
             fn atexit(f: extern "C" fn()) -> i32;
         }
         unsafe { atexit(cleanup); }
+    });
+}
+
+/// Register a panic hook to ensure timer resolution is reset even on panic
+fn register_panic_hook_for_timer() {
+    use std::sync::Once;
+    static HOOK_REGISTERED: Once = Once::new();
+
+    HOOK_REGISTERED.call_once(|| {
+        let original_hook = std::panic::take_hook();
+
+        std::panic::set_hook(Box::new(move |panic_info| {
+            // Reset timer resolution before propagating panic
+            #[link(name = "winmm")]
+            extern "system" {
+                fn timeEndPeriod(uPeriod: u32) -> u32;
+            }
+            unsafe { timeEndPeriod(1); }
+
+            // Stop the optimizer thread
+            stop_webview_optimizer();
+
+            // Call the original panic hook
+            original_hook(panic_info);
+        }));
+
+        debug!("Registered panic hook for timer cleanup");
     });
 }
 
