@@ -10,53 +10,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-## TRIGGER: "plugins go"
-
-When the user says **"plugins go"**, respond with:
-
-```
-Ready to set up plugins for PACDeluxe. Please run these commands:
-
-1. /plugin install rust-analyzer-lsp@claude-plugins-official
-2. /plugin install context7@claude-plugins-official
-3. /plugin install frontend-design@claude-plugins-official
-
-After installing, restart Claude CLI with: claude --resume
-
-Then say "ready" to continue where we left off.
-```
-
----
-
 ## CONTINUATION STATE (2026-01-01)
 
-### Current Status: BUILDS AND RUNS
-The app compiles and launches. Core implementation is complete.
+### Current Status: LIVE TESTING IN PROGRESS
+The app compiles, launches, and user can log in via Google OAuth.
 
 ### What's Working:
 1. **Tauri v2 shell** - Compiles and runs on Windows
-2. **Frontend build** - Correctly builds Pokemon Auto Chess (not pokechess)
+2. **Google OAuth login** - Works (passkeys don't work - known WebView2 limitation)
 3. **Performance optimizations applied:**
    - ABOVE_NORMAL_PRIORITY_CLASS for process
    - 1ms timer resolution (timeBeginPeriod)
    - DWM transitions disabled
    - Priority boost disabled for consistent timing
+   - **NEW: Power throttling disabled**
+   - **NEW: WebView2 child process priority elevation (background thread)**
+   - **NEW: Windows 11 DWM optimizations (no rounded corners, no mica)**
 4. **Performance overlay** - Toggle with Ctrl+Shift+P (FPS, CPU, Memory)
-5. **Frame monitor** - Passive FPS/frame timing measurement
+5. **O(1) LRU asset cache** - Refactored from O(n) eviction
+
+### Known Issues (In Progress):
+- **Auth popup doesn't auto-close** - `window.close()` not working in WebView2
+- **Windows Hello focus** - Passkey dialog doesn't come to foreground
+- **WebAuthn/Passkeys** - Not supported in WebView2 (use password login instead)
+
+### Debug Watcher Tool:
+**IMPORTANT:** A companion debug watcher exists at:
+```
+C:\Users\mtoli\Documents\Code\PacdeluxeDebugWatcher\
+```
+- Run a separate Claude session there for real-time monitoring
+- It tails logs, tracks processes, detects crashes
+- Coordinate with it during live testing sessions
+- Current Tauri dev log location (changes per session):
+  `C:\Users\mtoli\AppData\Local\Temp\claude\C--Users-mtoli-Documents-Code-pokemonautochessdeluxe\tasks\<task_id>.output`
+
+### Active Todo List:
+1. Fix auth popup not closing
+2. Add always-on-top for Windows Hello focus
+3. Verify WebView2 process priority elevation is working
+4. Test gameplay performance with overlay
+5. Monitor for memory leaks during extended play
 
 ### Known Limitations:
 - **GPU monitoring** - Not available (would require vendor-specific SDKs)
 - **No frame pacing control** - WebView controls frame delivery via requestAnimationFrame
 - **No render optimization** - Cannot hook into Phaser without modifying upstream
-
-### Immediate Next Steps:
-1. **TEST THE APP** - Run `npm run tauri:dev` and verify:
-   - Pokemon Auto Chess login screen appears (Google/Email/Twitter auth)
-   - Can log in and reach lobby
-   - Can join a game (8-player multiplayer)
-   - Performance overlay works (Ctrl+Shift+P)
-2. **Fix any Firebase/auth issues** - May need CSP adjustments
-3. **Fix any WebSocket connection issues** - Game uses Colyseus
+- **WebAuthn/Passkeys** - Fundamental WebView2 limitation, use password auth
 
 ### Key Files (Simplified - Windows Only):
 ```
