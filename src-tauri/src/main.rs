@@ -81,6 +81,110 @@ const OVERLAY_SCRIPT: &str = r#"
         document.head.appendChild(scrollbarFix);
         console.log('[PACDeluxe] Scrollbar fix applied');
 
+        // === HIGH-RESOLUTION DISPLAY FIX ===
+        // Upstream bug: game-container.ts caps MAX_HEIGHT at 1536px (32*48 tiles)
+        // This causes blurry upscaling on 1440p, 4K, and larger displays
+        // Fix: Patch the Phaser game's resize behavior and improve canvas rendering
+        (function highResFix() {
+            // Step 1: Add CSS for sharper canvas rendering on high-DPI displays
+            const canvasStyle = document.createElement('style');
+            canvasStyle.textContent = `
+                /* Improve canvas scaling quality on high-res displays */
+                canvas {
+                    image-rendering: -webkit-optimize-contrast;
+                    image-rendering: crisp-edges;
+                }
+                /* Ensure game container uses full viewport in fullscreen */
+                .game-container, #game, #root {
+                    width: 100% !important;
+                    height: 100% !important;
+                }
+                /* Fix for Phaser canvas centering in fullscreen */
+                canvas[data-testid="game-canvas"],
+                #game canvas {
+                    display: block !important;
+                    margin: auto !important;
+                }
+            `;
+            document.head.appendChild(canvasStyle);
+
+            // Step 2: Patch the game's resize function when Phaser loads
+            // We intercept setGameSize to allow higher resolutions
+            let patchAttempts = 0;
+            const maxAttempts = 60; // Try for 30 seconds
+
+            function patchPhaserResize() {
+                patchAttempts++;
+
+                // Find the Phaser game instance
+                const gameContainer = document.querySelector('.game-container');
+                const phaserGame = window.Phaser?.Game?.instance ||
+                                   gameContainer?.__vue__?.game ||
+                                   window.game;
+
+                if (phaserGame && phaserGame.scale) {
+                    // Store original setGameSize
+                    const originalSetGameSize = phaserGame.scale.setGameSize.bind(phaserGame.scale);
+
+                    // Calculate better limits based on actual screen size
+                    const screenHeight = window.screen.height;
+                    const devicePixelRatio = window.devicePixelRatio || 1;
+
+                    // New limits: support up to 4K (2160p) and beyond
+                    // Original: MAX_HEIGHT = 1536 (32 * 48)
+                    // New: MAX_HEIGHT = min(screenHeight, 2160) to support 4K
+                    const NEW_MAX_HEIGHT = Math.min(screenHeight * devicePixelRatio, 2160);
+                    const NEW_MIN_HEIGHT = 1000; // Slightly lower than original 1050
+
+                    console.log('[PACDeluxe] High-res fix: Screen=' + screenHeight + 'px, DPR=' + devicePixelRatio + ', NewMaxHeight=' + NEW_MAX_HEIGHT);
+
+                    // Override setGameSize to allow higher resolutions
+                    phaserGame.scale.setGameSize = function(width, height) {
+                        // Recalculate height with new limits if in fullscreen
+                        if (document.fullscreenElement || window.innerHeight > 1200) {
+                            const screenWidth = window.innerWidth - 60;
+                            const screenRatio = screenWidth / window.innerHeight;
+                            const IDEAL_WIDTH = 42 * 48; // 2016
+
+                            // Use new, higher limits
+                            const newHeight = Math.max(NEW_MIN_HEIGHT, Math.min(IDEAL_WIDTH / screenRatio, NEW_MAX_HEIGHT));
+                            const newWidth = Math.max(50 * 48, newHeight * screenRatio);
+
+                            if (newHeight > height) {
+                                console.log('[PACDeluxe] High-res override: ' + width + 'x' + height + ' -> ' + Math.round(newWidth) + 'x' + Math.round(newHeight));
+                                return originalSetGameSize(Math.round(newWidth), Math.round(newHeight));
+                            }
+                        }
+                        return originalSetGameSize(width, height);
+                    };
+
+                    // Force a resize to apply new limits
+                    window.dispatchEvent(new Event('resize'));
+
+                    console.log('[PACDeluxe] High-resolution display fix applied (supports up to 4K)');
+                    return true;
+                }
+
+                // Keep trying until game loads
+                if (patchAttempts < maxAttempts) {
+                    setTimeout(patchPhaserResize, 500);
+                } else {
+                    console.log('[PACDeluxe] High-res fix: Could not find Phaser game instance');
+                }
+                return false;
+            }
+
+            // Start trying to patch after a short delay (game needs to initialize)
+            setTimeout(patchPhaserResize, 2000);
+
+            // Also try on fullscreen change
+            document.addEventListener('fullscreenchange', () => {
+                if (document.fullscreenElement) {
+                    setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                }
+            });
+        })();
+
         // === FONT REPLACEMENT ===
         // Replace Jost font with Orbitron for a more distinctive look
         const fontLink = document.createElement('link');
