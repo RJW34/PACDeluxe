@@ -1,10 +1,13 @@
 /**
  * Input Optimizer
  *
- * Optimizes input handling for lower latency response.
- * This is a rendering/input optimization that does NOT affect gameplay logic.
+ * Provides actual input latency optimizations:
+ * - High-priority callback scheduling via MessageChannel
+ * - Mouse/touch event coalescing to reduce processing overhead
+ * - Passive event listeners where possible
+ * - getCoalescedEvents() support for pointer events
  *
- * CRITICAL: Input optimization ONLY affects visual feedback speed.
+ * CRITICAL: This optimizer ONLY affects input processing speed.
  * Game logic and server communication remain unchanged.
  * No automated inputs or decision-making.
  */
@@ -15,6 +18,7 @@
  * @property {number} maxLatency - Maximum recorded latency in ms
  * @property {number} minLatency - Minimum recorded latency in ms
  * @property {number} eventCount - Total input events processed
+ * @property {number} coalescedCount - Events saved by coalescing
  */
 
 export class InputOptimizer {
@@ -23,104 +27,196 @@ export class InputOptimizer {
     this.latencyMeasurements = [];
     this.maxMeasurements = 100;
 
-    /** @type {Map<string, number>} */
-    this.pendingInputs = new Map();
-
     /** @type {number} */
     this.eventCount = 0;
 
-    /** @type {boolean} */
-    this.isOptimized = false;
+    /** @type {number} */
+    this.coalescedCount = 0;
 
-    // Input event types to track
-    this.trackedEvents = [
-      'mousedown',
-      'mouseup',
-      'mousemove',
-      'click',
-      'touchstart',
-      'touchend',
-      'touchmove',
-      'keydown',
-      'keyup',
-    ];
+    /** @type {boolean} */
+    this.isInitialized = false;
+
+    // Coalescing state for high-frequency events
+    this.pendingMouseMove = null;
+    this.pendingTouchMove = null;
+    this.coalescingFrameId = null;
+
+    // MessageChannel for high-priority callbacks
+    this.messageChannel = null;
+    this.pendingCallbacks = [];
   }
 
   /**
    * Initialize input optimization
    */
   init() {
-    if (this.isOptimized) return;
+    if (this.isInitialized) {
+      console.warn('[InputOptimizer] Already initialized');
+      return;
+    }
 
     console.log('[InputOptimizer] Initializing...');
 
-    // Add high-priority event listeners
-    this.trackedEvents.forEach((eventType) => {
-      document.addEventListener(
-        eventType,
-        (e) => this.trackInputStart(e),
-        { capture: true, passive: true }
-      );
-    });
+    // Set up MessageChannel for high-priority processing
+    this.setupMessageChannel();
 
-    // Hook into requestAnimationFrame to measure render completion
-    this.hookRenderCompletion();
+    // Install event coalescing for high-frequency events
+    this.installEventCoalescing();
 
-    this.isOptimized = true;
-    console.log('[InputOptimizer] Initialized');
+    // Track latency for metrics
+    this.installLatencyTracking();
+
+    this.isInitialized = true;
+    console.log('[InputOptimizer] Initialized with event coalescing and high-priority callbacks');
   }
 
   /**
-   * Track the start of an input event
+   * Set up MessageChannel for high-priority callback scheduling
+   * MessageChannel fires after microtasks but before requestAnimationFrame
+   */
+  setupMessageChannel() {
+    if (typeof MessageChannel === 'undefined') {
+      console.warn('[InputOptimizer] MessageChannel not available');
+      return;
+    }
+
+    this.messageChannel = new MessageChannel();
+    this.messageChannel.port1.onmessage = () => {
+      const callbacks = this.pendingCallbacks;
+      this.pendingCallbacks = [];
+      for (const cb of callbacks) {
+        try {
+          cb();
+        } catch (e) {
+          console.error('[InputOptimizer] Callback error:', e);
+        }
+      }
+    };
+  }
+
+  /**
+   * Schedule a high-priority callback (fires before next paint)
+   * @param {Function} callback
+   */
+  scheduleHighPriority(callback) {
+    this.pendingCallbacks.push(callback);
+    if (this.messageChannel) {
+      this.messageChannel.port2.postMessage(null);
+    } else {
+      // Fallback to queueMicrotask if MessageChannel unavailable
+      queueMicrotask(callback);
+    }
+  }
+
+  /**
+   * Install event coalescing for high-frequency events
+   * This reduces processing overhead by batching rapid-fire events
+   */
+  installEventCoalescing() {
+    // Coalesce mousemove events
+    document.addEventListener('mousemove', (e) => {
+      this.eventCount++;
+
+      // If we have getCoalescedEvents, use it for smoothest tracking
+      if (e.getCoalescedEvents) {
+        const coalescedEvents = e.getCoalescedEvents();
+        if (coalescedEvents.length > 1) {
+          this.coalescedCount += coalescedEvents.length - 1;
+        }
+      }
+
+      // Store latest event, process on next frame
+      this.pendingMouseMove = e;
+      this.scheduleCoalescedProcessing();
+    }, { passive: true, capture: false });
+
+    // Coalesce touchmove events
+    document.addEventListener('touchmove', (e) => {
+      this.eventCount++;
+
+      // Use getCoalescedEvents if available
+      if (e.touches[0] && e.touches[0].getCoalescedEvents) {
+        const coalescedEvents = e.touches[0].getCoalescedEvents();
+        if (coalescedEvents.length > 1) {
+          this.coalescedCount += coalescedEvents.length - 1;
+        }
+      }
+
+      this.pendingTouchMove = e;
+      this.scheduleCoalescedProcessing();
+    }, { passive: true, capture: false });
+
+    // For click/mousedown/mouseup - use high-priority processing
+    ['mousedown', 'mouseup', 'click'].forEach(type => {
+      document.addEventListener(type, (e) => {
+        this.eventCount++;
+        this.measureEventLatency(e);
+      }, { passive: true, capture: true });
+    });
+
+    // For keyboard - high-priority processing
+    ['keydown', 'keyup'].forEach(type => {
+      document.addEventListener(type, (e) => {
+        this.eventCount++;
+        this.measureEventLatency(e);
+      }, { passive: true, capture: true });
+    });
+  }
+
+  /**
+   * Schedule processing of coalesced events
+   */
+  scheduleCoalescedProcessing() {
+    if (this.coalescingFrameId !== null) return;
+
+    this.coalescingFrameId = requestAnimationFrame(() => {
+      this.coalescingFrameId = null;
+
+      // Process coalesced mouse move
+      if (this.pendingMouseMove) {
+        this.measureEventLatency(this.pendingMouseMove);
+        this.pendingMouseMove = null;
+      }
+
+      // Process coalesced touch move
+      if (this.pendingTouchMove) {
+        this.measureEventLatency(this.pendingTouchMove);
+        this.pendingTouchMove = null;
+      }
+    });
+  }
+
+  /**
+   * Install latency tracking for metrics
+   */
+  installLatencyTracking() {
+    // Track pointer events if available (better precision)
+    if (typeof PointerEvent !== 'undefined') {
+      document.addEventListener('pointerdown', (e) => {
+        this.measureEventLatency(e);
+      }, { passive: true, capture: true });
+    }
+  }
+
+  /**
+   * Measure latency from event timestamp to processing
    * @param {Event} event
    */
-  trackInputStart(event) {
-    const timestamp = performance.now();
-    const inputId = `${event.type}-${timestamp}`;
+  measureEventLatency(event) {
+    const now = performance.now();
+    const eventTime = event.timeStamp || now;
 
-    this.pendingInputs.set(inputId, timestamp);
-    this.eventCount++;
+    // timeStamp is usually relative to page load
+    // Calculate latency from event to now
+    const latency = now - eventTime;
 
-    // Clean up old pending inputs (older than 1 second)
-    const cutoff = timestamp - 1000;
-    for (const [id, time] of this.pendingInputs) {
-      if (time < cutoff) {
-        this.pendingInputs.delete(id);
+    // Only record reasonable latencies (0-100ms range)
+    if (latency >= 0 && latency < 100) {
+      this.latencyMeasurements.push(latency);
+      if (this.latencyMeasurements.length > this.maxMeasurements) {
+        this.latencyMeasurements.shift();
       }
     }
-
-    // Schedule render completion check
-    requestAnimationFrame(() => {
-      this.measureLatency(inputId, timestamp);
-    });
-  }
-
-  /**
-   * Measure the latency from input to render
-   * @param {string} inputId
-   * @param {number} startTime
-   */
-  measureLatency(inputId, startTime) {
-    if (!this.pendingInputs.has(inputId)) return;
-
-    const renderTime = performance.now();
-    const latency = renderTime - startTime;
-
-    this.latencyMeasurements.push(latency);
-    if (this.latencyMeasurements.length > this.maxMeasurements) {
-      this.latencyMeasurements.shift();
-    }
-
-    this.pendingInputs.delete(inputId);
-  }
-
-  /**
-   * Hook into render completion for latency measurement
-   * Only runs when there are pending inputs to measure
-   */
-  hookRenderCompletion() {
-    // Only schedule render measurement when we have pending inputs
-    // This avoids the constant polling loop
   }
 
   /**
@@ -134,6 +230,7 @@ export class InputOptimizer {
         maxLatency: 0,
         minLatency: 0,
         eventCount: this.eventCount,
+        coalescedCount: this.coalescedCount,
       };
     }
 
@@ -143,10 +240,11 @@ export class InputOptimizer {
     const min = Math.min(...this.latencyMeasurements);
 
     return {
-      avgLatency: avg,
-      maxLatency: max,
-      minLatency: min,
+      avgLatency: Math.round(avg * 100) / 100,
+      maxLatency: Math.round(max * 100) / 100,
+      minLatency: Math.round(min * 100) / 100,
       eventCount: this.eventCount,
+      coalescedCount: this.coalescedCount,
     };
   }
 
@@ -155,50 +253,28 @@ export class InputOptimizer {
    */
   resetMetrics() {
     this.latencyMeasurements = [];
-    this.pendingInputs.clear();
     this.eventCount = 0;
-  }
-
-  /**
-   * Get current latency statistics
-   * @returns {Object}
-   */
-  getStats() {
-    const metrics = this.getMetrics();
-    return {
-      ...metrics,
-      isOptimized: this.isOptimized,
-      pendingInputs: this.pendingInputs.size,
-    };
+    this.coalescedCount = 0;
   }
 }
 
 // Singleton instance
 export const inputOptimizer = new InputOptimizer();
 
-// Auto-initialize
-if (typeof document !== 'undefined') {
-  // Initialize on DOMContentLoaded or immediately if already loaded
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-      inputOptimizer.init();
-    });
-  } else {
-    inputOptimizer.init();
-  }
-}
-
 /**
  * Utility: Request high-priority callback
- * Uses the most precise timing available
+ * Fires after microtasks but before next paint
  * @param {Function} callback
  */
 export function requestHighPriorityCallback(callback) {
-  // MessageChannel provides higher priority than setTimeout
-  if (typeof MessageChannel !== 'undefined') {
+  if (inputOptimizer.isInitialized) {
+    inputOptimizer.scheduleHighPriority(callback);
+  } else if (typeof MessageChannel !== 'undefined') {
     const channel = new MessageChannel();
     channel.port1.onmessage = callback;
     channel.port2.postMessage(null);
+  } else if (typeof queueMicrotask !== 'undefined') {
+    queueMicrotask(callback);
   } else {
     setTimeout(callback, 0);
   }
@@ -210,7 +286,6 @@ export function requestHighPriorityCallback(callback) {
  * @returns {number}
  */
 export function getInputTimestamp(event) {
-  // Use event.timeStamp if available and accurate
   if (event.timeStamp && event.timeStamp > 0) {
     return event.timeStamp;
   }

@@ -40,12 +40,8 @@ const getInvoke = async () => {
 
 /**
  * @typedef {Object} PerformanceStats
- * @property {number} fps - Frames per second
- * @property {number} frame_time_ms - Frame time in milliseconds
- * @property {number} cpu_usage - CPU usage percentage
+ * @property {number} cpu_usage - CPU usage percentage (global)
  * @property {number} memory_usage_mb - Memory usage in MB
- * @property {number|null} gpu_usage - GPU usage percentage (if available)
- * @property {number} frame_count - Total frames rendered
  * @property {number} uptime_secs - Application uptime in seconds
  */
 
@@ -123,69 +119,6 @@ export class TauriBridge {
       return await this.invoke('get_system_info');
     } catch (error) {
       console.error('[TauriBridge] Failed to get system info:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Set power mode
-   * @param {'balanced' | 'high_performance' | 'power_saver'} mode
-   * @returns {Promise<boolean>}
-   */
-  async setPowerMode(mode) {
-    if (!this.invoke) return false;
-
-    try {
-      await this.invoke('set_power_mode', { mode });
-      console.log(`[TauriBridge] Power mode set to: ${mode}`);
-      return true;
-    } catch (error) {
-      console.error('[TauriBridge] Failed to set power mode:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Decode an image using native code
-   * @param {string} path - Path to the image
-   * @param {number} [targetWidth] - Target width for resizing
-   * @param {number} [targetHeight] - Target height for resizing
-   * @returns {Promise<{success: boolean, width: number, height: number, data: Uint8Array}|null>}
-   */
-  async decodeImage(path, targetWidth, targetHeight) {
-    if (!this.invoke) return null;
-
-    try {
-      const result = await this.invoke('decode_image', {
-        request: {
-          path,
-          target_width: targetWidth,
-          target_height: targetHeight,
-        },
-      });
-
-      return {
-        ...result,
-        data: new Uint8Array(result.data),
-      };
-    } catch (error) {
-      console.error('[TauriBridge] Failed to decode image:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Preload assets into OS cache
-   * @param {string[]} paths - Paths to preload
-   * @returns {Promise<{success: boolean, loaded_count: number, failed_count: number, total_bytes: number}|null>}
-   */
-  async preloadAssets(paths) {
-    if (!this.invoke) return null;
-
-    try {
-      return await this.invoke('preload_assets', { paths });
-    } catch (error) {
-      console.error('[TauriBridge] Failed to preload assets:', error);
       return null;
     }
   }

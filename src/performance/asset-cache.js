@@ -1,14 +1,12 @@
 /**
  * Asset Cache
  *
- * Provides advanced asset caching for maximum performance.
- * Preloads and caches game assets to prevent mid-game loading.
+ * Provides transparent caching for game assets by intercepting fetch() calls.
+ * Caches static assets (images, JSON, audio) to reduce network requests.
  *
  * CRITICAL: This cache ONLY stores assets.
  * It does NOT modify, intercept, or manipulate game data.
  */
-
-import { tauriBridge } from '../bridge/tauri-bridge.js';
 
 /**
  * @typedef {Object} CacheStats
@@ -22,11 +20,32 @@ import { tauriBridge } from '../bridge/tauri-bridge.js';
 /**
  * @typedef {Object} CacheEntry
  * @property {string} key
- * @property {any} data
+ * @property {Response} response
  * @property {number} size
  * @property {number} lastAccess
  * @property {number} accessCount
  */
+
+// Asset URL patterns to cache (static resources only)
+const CACHEABLE_PATTERNS = [
+  /\.(png|jpg|jpeg|gif|webp|svg)$/i,  // Images
+  /\.(json)$/i,                        // JSON (atlases, configs)
+  /\.(mp3|ogg|wav|m4a)$/i,            // Audio
+  /\.(woff|woff2|ttf|otf)$/i,         // Fonts
+  /\/assets\//i,                       // Anything in /assets/
+  /\/tilesets\//i,                     // Tileset data
+];
+
+// URLs to never cache (dynamic content)
+const NEVER_CACHE_PATTERNS = [
+  /\/api\//i,           // API calls
+  /firestore/i,         // Firebase
+  /firebase/i,          // Firebase
+  /colyseus/i,          // Game server
+  /socket/i,            // WebSocket
+  /\.hot-update\./i,    // HMR updates
+  /\?/,                 // URLs with query strings (often dynamic)
+];
 
 export class AssetCache {
   constructor() {
@@ -34,73 +53,130 @@ export class AssetCache {
     this.cache = new Map();
 
     /** @type {number} */
-    this.maxSizeBytes = 512 * 1024 * 1024; // 512 MB default
+    this.maxSizeBytes = 256 * 1024 * 1024; // 256 MB default
 
     /** @type {number} */
     this.currentSizeBytes = 0;
+
+    /** @type {boolean} */
+    this.isInitialized = false;
+
+    /** @type {Function|null} */
+    this.originalFetch = null;
 
     // Statistics
     this.stats = {
       hits: 0,
       misses: 0,
       evictions: 0,
-    };
-
-    // Asset categories for priority preloading
-    this.categories = {
-      critical: [], // Must be loaded before game start
-      high: [],     // Should be loaded during loading screen
-      normal: [],   // Load in background
-      low: [],      // Load on demand
+      bypassed: 0,
     };
   }
 
   /**
-   * Initialize the cache
+   * Initialize the cache and install fetch interceptor
    * @param {Object} options
    */
   async init(options = {}) {
+    if (this.isInitialized) {
+      console.warn('[AssetCache] Already initialized');
+      return;
+    }
+
     if (options.maxSizeMB) {
       this.maxSizeBytes = options.maxSizeMB * 1024 * 1024;
     }
 
-    console.log(`[AssetCache] Initialized with ${this.maxSizeBytes / 1024 / 1024} MB limit`);
+    // Install fetch interceptor
+    this.installFetchInterceptor();
 
-    // Register with IndexedDB for persistence
-    await this.initIndexedDB();
+    this.isInitialized = true;
+    console.log(`[AssetCache] Initialized with ${this.maxSizeBytes / 1024 / 1024} MB limit`);
   }
 
   /**
-   * Initialize IndexedDB for persistent caching
+   * Check if a URL should be cached
+   * @param {string} url
+   * @returns {boolean}
    */
-  async initIndexedDB() {
-    return new Promise((resolve, _reject) => {
-      const request = indexedDB.open('pac-asset-cache', 1);
+  shouldCache(url) {
+    // Never cache these
+    for (const pattern of NEVER_CACHE_PATTERNS) {
+      if (pattern.test(url)) {
+        return false;
+      }
+    }
 
-      request.onerror = () => {
-        console.warn('[AssetCache] IndexedDB not available');
-        resolve();
-      };
+    // Cache if matches cacheable patterns
+    for (const pattern of CACHEABLE_PATTERNS) {
+      if (pattern.test(url)) {
+        return true;
+      }
+    }
 
-      request.onsuccess = () => {
-        this.db = request.result;
-        console.log('[AssetCache] IndexedDB initialized');
-        resolve();
-      };
+    return false;
+  }
 
-      request.onupgradeneeded = (event) => {
-        const db = event.target.result;
-        if (!db.objectStoreNames.contains('assets')) {
-          db.createObjectStore('assets', { keyPath: 'key' });
+  /**
+   * Install fetch interceptor
+   */
+  installFetchInterceptor() {
+    if (typeof window === 'undefined' || !window.fetch) {
+      console.warn('[AssetCache] fetch not available, skipping interceptor');
+      return;
+    }
+
+    this.originalFetch = window.fetch.bind(window);
+
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+
+      // Only intercept GET requests for cacheable URLs
+      const method = init?.method?.toUpperCase() || 'GET';
+      if (method !== 'GET' || !this.shouldCache(url)) {
+        this.stats.bypassed++;
+        return this.originalFetch(input, init);
+      }
+
+      // Check cache first
+      const cached = this.get(url);
+      if (cached) {
+        this.stats.hits++;
+        // Clone the response so it can be used multiple times
+        return cached.clone();
+      }
+
+      // Fetch from network
+      this.stats.misses++;
+      try {
+        const response = await this.originalFetch(input, init);
+
+        // Only cache successful responses
+        if (response.ok) {
+          // Clone before caching (response body can only be read once)
+          const clonedResponse = response.clone();
+          this.set(url, clonedResponse);
         }
-      };
-    });
+
+        return response;
+      } catch (error) {
+        // On network error, try to return cached version if available
+        const fallback = this.get(url);
+        if (fallback) {
+          console.log(`[AssetCache] Network error, using cached: ${url}`);
+          return fallback.clone();
+        }
+        throw error;
+      }
+    };
+
+    console.log('[AssetCache] Fetch interceptor installed');
   }
 
   /**
    * Get an asset from cache
    * @param {string} key
-   * @returns {any|null}
+   * @returns {Response|null}
    */
   get(key) {
     const entry = this.cache.get(key);
@@ -108,65 +184,47 @@ export class AssetCache {
     if (entry) {
       entry.lastAccess = Date.now();
       entry.accessCount++;
-      this.stats.hits++;
-      return entry.data;
+      return entry.response;
     }
 
-    this.stats.misses++;
     return null;
   }
 
   /**
-   * Store an asset in cache
+   * Store a response in cache
    * @param {string} key
-   * @param {any} data
-   * @param {number} [size]
+   * @param {Response} response
    */
-  set(key, data, size) {
-    const entrySize = size || this.estimateSize(data);
+  async set(key, response) {
+    try {
+      // Get response size from content-length or estimate
+      const contentLength = response.headers.get('content-length');
+      const size = contentLength ? parseInt(contentLength, 10) : 50000; // 50KB default estimate
 
-    // Evict if necessary
-    while (this.currentSizeBytes + entrySize > this.maxSizeBytes) {
-      if (!this.evictLRU()) {
-        console.warn('[AssetCache] Cannot evict enough space');
-        return false;
+      // Evict if necessary
+      while (this.currentSizeBytes + size > this.maxSizeBytes && this.cache.size > 0) {
+        this.evictLRU();
       }
-    }
 
-    const entry = {
-      key,
-      data,
-      size: entrySize,
-      lastAccess: Date.now(),
-      accessCount: 1,
-    };
+      // Don't cache if single item exceeds limit
+      if (size > this.maxSizeBytes) {
+        console.warn(`[AssetCache] Asset too large to cache: ${key} (${size} bytes)`);
+        return;
+      }
 
-    this.cache.set(key, entry);
-    this.currentSizeBytes += entrySize;
+      const entry = {
+        key,
+        response,
+        size,
+        lastAccess: Date.now(),
+        accessCount: 1,
+      };
 
-    return true;
-  }
-
-  /**
-   * Estimate the size of data in bytes
-   * @param {any} data
-   * @returns {number}
-   */
-  estimateSize(data) {
-    if (data instanceof ArrayBuffer) {
-      return data.byteLength;
+      this.cache.set(key, entry);
+      this.currentSizeBytes += size;
+    } catch (error) {
+      console.warn('[AssetCache] Failed to cache:', key, error);
     }
-    if (data instanceof Blob) {
-      return data.size;
-    }
-    if (typeof data === 'string') {
-      return data.length * 2; // UTF-16
-    }
-    if (data instanceof ImageBitmap) {
-      return data.width * data.height * 4; // RGBA
-    }
-    // Rough estimate for objects
-    return JSON.stringify(data).length * 2;
   }
 
   /**
@@ -196,70 +254,6 @@ export class AssetCache {
   }
 
   /**
-   * Preload a list of assets
-   * @param {string[]} urls
-   * @param {Object} options
-   * @returns {Promise<Object>}
-   */
-  async preload(urls, options = {}) {
-    const { priority = 'normal', onProgress } = options;
-    const results = { loaded: 0, failed: 0, total: urls.length };
-
-    console.log(`[AssetCache] Preloading ${urls.length} assets (priority: ${priority})`);
-
-    // Use native preloader if available
-    if (tauriBridge.hasNativeFeatures()) {
-      const nativeResult = await tauriBridge.preloadAssets(urls);
-      if (nativeResult) {
-        console.log(`[AssetCache] Native preload: ${nativeResult.loaded_count} assets`);
-      }
-    }
-
-    // Web preload
-    const batchSize = priority === 'critical' ? 1 : 5;
-
-    for (let i = 0; i < urls.length; i += batchSize) {
-      const batch = urls.slice(i, i + batchSize);
-
-      await Promise.all(batch.map(async (url) => {
-        try {
-          const response = await fetch(url);
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-          }
-
-          const contentType = response.headers.get('content-type') || '';
-          let data;
-
-          if (contentType.includes('image')) {
-            const blob = await response.blob();
-            data = await createImageBitmap(blob);
-          } else if (contentType.includes('audio')) {
-            data = await response.arrayBuffer();
-          } else if (contentType.includes('json')) {
-            data = await response.json();
-          } else {
-            data = await response.text();
-          }
-
-          this.set(url, data);
-          results.loaded++;
-        } catch (error) {
-          console.warn(`[AssetCache] Failed to preload: ${url}`, error);
-          results.failed++;
-        }
-
-        if (onProgress) {
-          onProgress(results.loaded + results.failed, results.total);
-        }
-      }));
-    }
-
-    console.log(`[AssetCache] Preload complete: ${results.loaded}/${results.total}`);
-    return results;
-  }
-
-  /**
    * Get cache statistics
    * @returns {CacheStats}
    */
@@ -272,6 +266,9 @@ export class AssetCache {
       totalBytes: this.currentSizeBytes,
       hitRate: totalRequests > 0 ? this.stats.hits / totalRequests : 0,
       missCount: this.stats.misses,
+      hits: this.stats.hits,
+      bypassed: this.stats.bypassed,
+      evictions: this.stats.evictions,
     };
   }
 
@@ -281,83 +278,23 @@ export class AssetCache {
   clear() {
     this.cache.clear();
     this.currentSizeBytes = 0;
+    this.stats = { hits: 0, misses: 0, evictions: 0, bypassed: 0 };
     console.log('[AssetCache] Cache cleared');
   }
 
   /**
-   * Warm the cache with commonly used assets
-   * @param {string[]} assetUrls - Optional specific URLs to warm
+   * Restore original fetch (for cleanup)
    */
-  async warmCache(assetUrls = []) {
-    // If specific URLs provided, preload those
-    if (assetUrls.length > 0) {
-      console.log(`[AssetCache] Warming cache with ${assetUrls.length} specific assets...`);
-      return this.preload(assetUrls, { priority: 'high' });
+  destroy() {
+    if (this.originalFetch && typeof window !== 'undefined') {
+      window.fetch = this.originalFetch;
+      this.originalFetch = null;
+      console.log('[AssetCache] Fetch interceptor removed');
     }
-
-    // Otherwise try to discover and preload common assets
-    console.log('[AssetCache] Warming cache with common assets...');
-
-    // Try to fetch asset manifest if available
-    try {
-      const manifestResponse = await fetch('/assets/manifest.json');
-      if (manifestResponse.ok) {
-        const manifest = await manifestResponse.json();
-        if (manifest.preload && Array.isArray(manifest.preload)) {
-          console.log(`[AssetCache] Found ${manifest.preload.length} assets in manifest`);
-          return this.preload(manifest.preload, { priority: 'critical' });
-        }
-      }
-    } catch {
-      // No manifest available, continue with discovery
-    }
-
-    // Discover critical assets by checking for common Phaser asset patterns
-    const discoveredAssets = [];
-
-    // Common asset paths in Pokemon Auto Chess (based on upstream structure)
-    const assetPatterns = [
-      '/assets/ui/',
-      '/assets/pokemons/',
-      '/assets/types/',
-      '/assets/items/',
-      '/assets/abilities/',
-      '/tilesets/'
-    ];
-
-    // Try to find atlas files (JSON + PNG pairs are critical for Phaser)
-    for (const pattern of assetPatterns) {
-      try {
-        // Try common atlas naming conventions
-        const atlasNames = ['atlas', 'spritesheet', 'sprites'];
-        for (const name of atlasNames) {
-          const jsonUrl = `${pattern}${name}.json`;
-          const response = await fetch(jsonUrl, { method: 'HEAD' });
-          if (response.ok) {
-            discoveredAssets.push(jsonUrl);
-            // Also queue the corresponding PNG
-            discoveredAssets.push(jsonUrl.replace('.json', '.png'));
-          }
-        }
-      } catch {
-        // Asset doesn't exist at this path, continue
-      }
-    }
-
-    if (discoveredAssets.length > 0) {
-      console.log(`[AssetCache] Discovered ${discoveredAssets.length} assets to preload`);
-      return this.preload(discoveredAssets, { priority: 'high' });
-    }
-
-    console.log('[AssetCache] No assets discovered, cache will populate on demand');
-    return { loaded: 0, failed: 0, total: 0 };
+    this.clear();
+    this.isInitialized = false;
   }
 }
 
 // Singleton instance
 export const assetCache = new AssetCache();
-
-// Auto-initialize
-if (typeof window !== 'undefined') {
-  assetCache.init().catch(console.error);
-}

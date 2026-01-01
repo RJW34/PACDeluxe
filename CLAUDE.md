@@ -41,8 +41,13 @@ The app compiles and launches. Core implementation is complete.
    - 1ms timer resolution (timeBeginPeriod)
    - DWM transitions disabled
    - Priority boost disabled for consistent timing
-4. **Performance overlay** - Toggle with Ctrl+Shift+P (FPS, CPU, MEM, GPU)
-5. **GPU monitoring** - PowerShell-based with 2-second cache
+4. **Performance overlay** - Toggle with Ctrl+Shift+P (FPS, CPU, Memory)
+5. **Frame monitor** - Passive FPS/frame timing measurement
+
+### Known Limitations:
+- **GPU monitoring** - Not available (would require vendor-specific SDKs)
+- **No frame pacing control** - WebView controls frame delivery via requestAnimationFrame
+- **No render optimization** - Cannot hook into Phaser without modifying upstream
 
 ### Immediate Next Steps:
 1. **TEST THE APP** - Run `npm run tauri:dev` and verify:
@@ -102,14 +107,13 @@ npm run tauri:build        # Release build (MSI/NSIS)
 ## Architecture
 
 ```
-pokemonautochessdeluxe/
+pacdeluxe/
 ├── src/                    # JavaScript performance modules
-│   ├── performance/        # Render, frame pacing, input optimization
-│   │   ├── render-optimizer.js
-│   │   ├── frame-pacer.js
-│   │   ├── input-optimizer.js
-│   │   ├── asset-cache.js
-│   │   └── profiling-overlay.js
+│   ├── performance/        # Frame monitoring, input tracking, overlay
+│   │   ├── frame-monitor.js    # Passive FPS/timing measurement
+│   │   ├── input-optimizer.js  # Input latency monitoring
+│   │   ├── asset-cache.js      # IndexedDB asset caching
+│   │   └── profiling-overlay.js # Ctrl+Shift+P overlay
 │   ├── bridge/             # Tauri IPC bridge
 │   │   └── tauri-bridge.js
 │   └── index.js            # Main entry point
@@ -172,7 +176,7 @@ npm run lint
 - **Desktop Shell:** Tauri v2 (Rust backend, WebView frontend)
 - **Native Helper:** Rust (performance.rs, commands.rs)
 - **Frontend:** Cloned upstream pokemonAutoChess (React + Phaser 3)
-- **Performance Layer:** JavaScript modules (render-optimizer, frame-pacer, etc.)
+- **Performance Layer:** JavaScript modules (frame-monitor, profiling-overlay)
 - **IPC:** Tauri command system with strict schemas
 
 ## Key Files
@@ -181,8 +185,9 @@ npm run lint
 |------|---------|
 | `src-tauri/src/main.rs` | Tauri application entry, window setup |
 | `src-tauri/src/performance.rs` | System-level optimizations (priority, timers) |
-| `src-tauri/src/commands.rs` | IPC commands (get_performance_stats, decode_image) |
-| `src/performance/render-optimizer.js` | Phaser rendering optimization |
+| `src-tauri/src/commands.rs` | IPC commands (get_performance_stats, get_system_info) |
+| `src/performance/frame-monitor.js` | Passive FPS and frame timing measurement |
+| `src/performance/profiling-overlay.js` | Performance overlay (Ctrl+Shift+P) |
 | `src/bridge/tauri-bridge.js` | JavaScript-Rust bridge |
 | `scripts/validate-determinism.js` | Ensures gameplay is identical to browser |
 

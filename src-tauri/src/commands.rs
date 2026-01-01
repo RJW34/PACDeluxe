@@ -1,11 +1,11 @@
 //! Tauri Commands - Windows Only
 //!
-//! IPC commands for performance monitoring.
+//! IPC commands for performance monitoring and window control.
 //! No game state access.
 
 use crate::performance::{PerformanceMonitor, PerformanceStats};
 use serde::Serialize;
-use tauri::State;
+use tauri::{State, Manager, AppHandle};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemInfo {
@@ -64,4 +64,19 @@ fn detect_gpu() -> Option<String> {
         }
     }
     None
+}
+
+/// Toggle exclusive fullscreen mode
+#[tauri::command]
+pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
+    let window = app.get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    let is_fullscreen = window.is_fullscreen()
+        .map_err(|e| e.to_string())?;
+
+    window.set_fullscreen(!is_fullscreen)
+        .map_err(|e| e.to_string())?;
+
+    Ok(!is_fullscreen)
 }

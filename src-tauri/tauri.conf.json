@@ -4,38 +4,13 @@
   "version": "1.0.0",
   "identifier": "com.pacdeluxe",
   "build": {
-    "beforeDevCommand": "npm run build:frontend",
-    "beforeBuildCommand": "npm run build:frontend",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
   },
   "app": {
-    "windows": [
-      {
-        "title": "PACDeluxe",
-        "width": 1280,
-        "height": 900,
-        "minWidth": 1024,
-        "minHeight": 768,
-        "resizable": true,
-        "fullscreen": false,
-        "decorations": true,
-        "center": true,
-        "focus": true,
-        "visible": true,
-        "label": "main"
-      }
-    ],
+    "windows": [],
     "security": {
-      "csp": {
-        "default-src": "'self'",
-        "script-src": "'self' 'unsafe-inline' 'unsafe-eval'",
-        "style-src": "'self' 'unsafe-inline' https://fonts.googleapis.com",
-        "font-src": "'self' https://fonts.gstatic.com data:",
-        "img-src": "'self' data: https: blob:",
-        "connect-src": "'self' https: wss:",
-        "media-src": "'self' https: blob:",
-        "worker-src": "'self' blob:"
-      }
+      "csp": null
     },
     "withGlobalTauri": true
   },

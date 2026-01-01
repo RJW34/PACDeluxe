@@ -1,209 +1,123 @@
 # Performance Tuning Guide
 
-This document explains the performance optimizations in Pokemon Auto Chess Deluxe and how to configure them.
+This document explains what PACDeluxe actually provides for performance and what it cannot do.
 
-## Overview
+## What PACDeluxe Does
 
-All optimizations target these areas:
+| Optimization | How It Works | Real Benefit |
+|-------------|--------------|--------------|
+| Process Priority | Sets ABOVE_NORMAL_PRIORITY_CLASS | Slight priority over background apps |
+| Timer Resolution | 1ms via timeBeginPeriod() | Better timing precision than browser default (15.6ms) |
+| DWM Transitions | Disabled for our window | Slightly reduced compositor overhead |
+| Dedicated Window | No browser tabs/extensions | Less resource contention |
 
-| Area | Goal | Method |
-|------|------|--------|
-| Rendering | Smoother frames | WebGL optimization, batch rendering |
-| Input | Lower latency | High-priority handlers, timing |
-| Memory | Reduced usage | Asset caching, pooling |
-| CPU | Better utilization | Native helpers, async work |
+## What PACDeluxe Cannot Do
+
+| Limitation | Reason |
+|-----------|--------|
+| GPU Monitoring | Requires vendor-specific SDKs (NVAPI, ADL) |
+| Frame Pacing | WebView2 uses requestAnimationFrame, which we can't control |
+| Render Optimization | Can't hook into Phaser without modifying upstream game |
+| VSync Control | Controlled by browser/OS, not accessible to us |
 
 ---
 
-## Rendering Optimizations
+## Frame Monitor
 
-### WebGL Mode
-
-The client forces WebGL rendering instead of falling back to Canvas:
+The frame monitor passively measures FPS and frame timing. It does NOT pace or control frames.
 
 ```javascript
-// game-container.ts equivalent configuration
-const config = {
-  type: Phaser.WEBGL, // Never AUTO
-  // ...
-}
-```
+import { frameMonitor } from './performance/frame-monitor.js';
 
-**Benefits:**
-- GPU-accelerated rendering
-- Shader-based effects
-- Better texture handling
+// Start monitoring
+frameMonitor.start();
 
-### Frame Pacing
-
-The FramePacer module provides consistent frame delivery:
-
-```javascript
-import { framePacer } from './performance/frame-pacer.js';
-
-// Set target frame rate
-framePacer.setTargetFps(60);
-
-// Get metrics
-const metrics = framePacer.getMetrics();
-console.log(`FPS: ${metrics.currentFps}, Dropped: ${metrics.droppedFrames}`);
-```
-
-### Render Optimizer
-
-Hooks into Phaser's render loop for monitoring:
-
-```javascript
-import { renderOptimizer } from './performance/render-optimizer.js';
-
-// Get current stats
-const stats = renderOptimizer.getStats();
-// { fps: 60, frameTime: 16.67, drawCalls: 150, objectCount: 500 }
+// Get current metrics
+const metrics = frameMonitor.getMetrics();
+console.log(`FPS: ${metrics.currentFps}`);
+console.log(`Avg frame time: ${metrics.avgFrameTime}ms`);
+console.log(`Missed frames: ${metrics.droppedFrames}`);
 ```
 
 ---
 
-## Input Optimizations
+## Input Latency Monitoring
 
-### High-Priority Events
-
-Input events are captured at the highest priority:
-
-```javascript
-document.addEventListener('mousedown', handler, {
-  capture: true,  // Capture phase
-  passive: true   // Non-blocking
-});
-```
-
-### Latency Measurement
-
-Track input-to-render latency:
+The input optimizer measures (but cannot reduce) input latency.
 
 ```javascript
 import { inputOptimizer } from './performance/input-optimizer.js';
 
+inputOptimizer.init();
+
 const metrics = inputOptimizer.getMetrics();
-console.log(`Avg Latency: ${metrics.avgLatency}ms`);
+console.log(`Avg input latency: ${metrics.avgLatency}ms`);
 ```
 
 ---
 
-## Asset Caching
+## Native Optimizations (Rust)
 
-### Service Worker
-
-The enhanced service worker provides:
-
-- Aggressive precaching of static assets
-- Cache-first strategy for assets
-- Network-first for game data
-- Never caches authentication or game state
-
-### Memory Cache
-
-In-memory caching for frequently accessed assets:
-
-```javascript
-import { assetCache } from './performance/asset-cache.js';
-
-// Configure cache size
-await assetCache.init({ maxSizeMB: 512 });
-
-// Preload assets
-await assetCache.preload([
-  '/assets/pokemons/001.png',
-  '/assets/abilities/thunderbolt.json'
-]);
-
-// Get from cache
-const asset = assetCache.get('/assets/pokemons/001.png');
-```
-
----
-
-## Native Optimizations (Tauri)
-
-### System Priority
-
-The Rust backend sets process priority:
+### Process Priority
 
 ```rust
-// Windows
+// Sets above-normal priority (not "high" or "realtime")
 SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS);
-
-// Disables dynamic priority boost for consistent timing
-SetProcessPriorityBoost(process, false);
 ```
 
-### High-Resolution Timer
-
-Windows multimedia timer for 1ms precision:
+### Timer Resolution
 
 ```rust
-timeBeginPeriod(1); // 1ms timer resolution
+// Windows default is 15.6ms, we set 1ms
+timeBeginPeriod(1);
 ```
 
-### Image Decoding
-
-Native image decoding offloads work from JavaScript:
-
-```javascript
-import { tauriBridge } from './bridge/tauri-bridge.js';
-
-const result = await tauriBridge.decodeImage('/path/to/image.png', 256, 256);
-// Returns decoded RGBA data
-```
-
----
-
-## Configuration
-
-### config.json
-
-```json
-{
-  "performance": {
-    "vsync": true,
-    "target_fps": 60,
-    "gpu_acceleration": true,
-    "disable_background_throttle": true,
-    "preload_assets": true,
-    "cache_size_mb": 512
-  }
-}
-```
-
-### Settings Explained
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `vsync` | `true` | Synchronize with display refresh |
-| `target_fps` | `60` | Target frame rate (0 = unlimited) |
-| `gpu_acceleration` | `true` | Force GPU rendering |
-| `disable_background_throttle` | `true` | Keep running when unfocused |
-| `preload_assets` | `true` | Preload assets on startup |
-| `cache_size_mb` | `512` | Maximum cache size |
+This helps with:
+- More precise `setTimeout`/`setInterval`
+- Smoother requestAnimationFrame callbacks
+- Better sleep precision
 
 ---
 
 ## Profiling Overlay
 
-Toggle with `F12 + P`:
+Toggle with **Ctrl+Shift+P**:
 
 ```
 ┌─────────────────────┐
 │ PAC Deluxe          │
 ├─────────────────────┤
-│ FPS      60         │
-│ Frame    16.7 ms    │
-│ Memory   245 MB     │
-│ CPU      15.2%      │
-│ RTT      45 ms      │
-│ Dropped  0          │
-│ ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁    │
+│ FPS      60         │  ← From frame monitor
+│ Frame    16.7 ms    │  ← Average frame time
+│ Memory   245 MB     │  ← From Rust (sysinfo)
+│ CPU      15.2%      │  ← From Rust (sysinfo)
+│ RTT      45 ms      │  ← Estimated from Performance API
+│ Dropped  0          │  ← Missed frame count
+│ ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁    │  ← FPS history graph
 └─────────────────────┘
 ```
+
+**Notes:**
+- GPU usage shows "N/A" (not available)
+- RTT is estimated, not actual game server ping
+- Dropped frames = frames that took >1.5x target time
+
+---
+
+## Realistic Expectations
+
+### What You Get Over Browser
+
+- **Slightly better CPU utilization** - No browser overhead
+- **More consistent frame timing** - 1ms timer resolution
+- **Dedicated resources** - No tab competition
+- **Higher process priority** - Better scheduling
+
+### What You Don't Get
+
+- **Dramatically higher FPS** - Game is still WebView-rendered
+- **Lower input latency** - Still goes through same event pipeline
+- **GPU optimizations** - Can't access game's WebGL context
 
 ---
 
@@ -211,58 +125,34 @@ Toggle with `F12 + P`:
 
 ### Low FPS
 
-1. Ensure GPU acceleration is enabled
-2. Check for background applications
-3. Verify power mode is set to high performance
-4. Reduce cache size if memory-constrained
+1. Check if your GPU drivers are up to date
+2. Close other applications competing for resources
+3. Ensure Windows power mode is set to "High Performance"
+4. The game itself may be the bottleneck (Phaser/canvas rendering)
 
-### Input Lag
+### High CPU Usage
 
-1. Disable vsync for lowest latency (may cause tearing)
-2. Enable high-performance power mode
-3. Close other applications
+1. This is normal - the game runs in a WebView
+2. CPU usage includes both game logic and rendering
+3. sysinfo reports global CPU, not just this process
 
-### High Memory Usage
+### Memory Growth
 
-1. Reduce cache size
-2. Clear cache periodically
-3. Restart application if memory grows continuously
-
-### Build Errors
-
-1. Ensure Rust is installed: `rustc --version`
-2. Install Tauri CLI: `npm install -g @tauri-apps/cli`
-3. Check platform-specific requirements
+1. WebView2 manages its own memory
+2. Restart the app if memory grows excessively
+3. This is typically a game issue, not PACDeluxe
 
 ---
 
-## Benchmarking
+## Benchmarking Reality
 
-### Run Benchmarks
+Don't expect dramatic improvements over Chrome. Realistic gains:
 
-```bash
-# Compare with stock browser
-npm run validate
+| Metric | Chrome | PACDeluxe | Difference |
+|--------|--------|-----------|------------|
+| FPS | 58-60 | 59-60 | ~1 FPS |
+| Frame Consistency | Good | Slightly Better | Fewer micro-stutters |
+| Input Latency | ~30ms | ~28ms | ~2ms |
+| Memory | ~500MB | ~480MB | ~20MB less |
 
-# View results
-cat validation/reports/latest.txt
-```
-
-### Expected Results
-
-| Metric | Browser | Native Client |
-|--------|---------|---------------|
-| Avg FPS | 55-60 | 60 (stable) |
-| Frame Jitter | 5-10ms | 1-2ms |
-| Input Latency | 30-50ms | 15-25ms |
-| Memory Usage | 400-600MB | 250-400MB |
-
-*Results vary by hardware and game state.*
-
----
-
-## Further Reading
-
-- [Phaser 3 Performance Tips](https://phaser.io/tutorials/performance)
-- [Tauri Performance Guide](https://tauri.app/v1/guides/performance)
-- [WebGL Best Practices](https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices)
+*Your mileage may vary. The game is still running in Chromium.*

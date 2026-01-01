@@ -1,14 +1,15 @@
 /**
- * Frame Pacer
+ * Frame Monitor
  *
- * Provides frame pacing optimization for consistent frame delivery.
- * This is a rendering-only optimization that does NOT affect gameplay timing.
+ * Passively monitors frame timing and provides metrics.
+ * This is a diagnostic tool that does NOT affect gameplay or frame pacing.
  *
- * CRITICAL: Frame pacing ONLY affects visual smoothness.
- * Game logic timing remains unchanged and server-authoritative.
+ * IMPORTANT: This module only MEASURES frame timing.
+ * It does NOT pace, throttle, or control frame delivery.
+ * requestAnimationFrame timing is controlled by the browser/WebView.
  */
 
-export class FramePacer {
+export class FrameMonitor {
   constructor() {
     /** @type {number} */
     this.targetFps = 60;
@@ -31,10 +32,7 @@ export class FramePacer {
     /** @type {number|null} */
     this.rafId = null;
 
-    /** @type {Function|null} */
-    this.callback = null;
-
-    // Performance metrics
+    // Performance metrics (passive observation only)
     this.metrics = {
       droppedFrames: 0,
       totalFrames: 0,
@@ -43,35 +41,34 @@ export class FramePacer {
   }
 
   /**
-   * Set target frame rate
+   * Set target frame rate for metric calculations
    * @param {number} fps - Target frames per second
    */
   setTargetFps(fps) {
     this.targetFps = Math.max(1, Math.min(240, fps));
     this.frameInterval = 1000 / this.targetFps;
-    console.log(`[FramePacer] Target FPS set to ${this.targetFps}`);
+    console.log(`[FrameMonitor] Target FPS set to ${this.targetFps}`);
   }
 
   /**
-   * Start the frame pacer
-   * @param {Function} callback - Function to call each frame
+   * Start monitoring frames
    */
-  start(callback) {
+  start() {
     if (this.isRunning) {
-      console.warn('[FramePacer] Already running');
+      console.warn('[FrameMonitor] Already running');
       return;
     }
 
-    this.callback = callback;
     this.isRunning = true;
     this.lastFrameTime = performance.now();
+    this.resetMetrics();
 
-    console.log('[FramePacer] Started');
+    console.log('[FrameMonitor] Started monitoring');
     this.scheduleFrame();
   }
 
   /**
-   * Stop the frame pacer
+   * Stop monitoring
    */
   stop() {
     this.isRunning = false;
@@ -79,25 +76,25 @@ export class FramePacer {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
-    console.log('[FramePacer] Stopped');
+    console.log('[FrameMonitor] Stopped');
   }
 
   /**
-   * Schedule the next frame
+   * Schedule the next frame observation
    */
   scheduleFrame() {
     if (!this.isRunning) return;
 
     this.rafId = requestAnimationFrame((timestamp) => {
-      this.processFrame(timestamp);
+      this.recordFrame(timestamp);
     });
   }
 
   /**
-   * Process a frame
+   * Record frame timing data
    * @param {number} timestamp - Current timestamp from requestAnimationFrame
    */
-  processFrame(timestamp) {
+  recordFrame(timestamp) {
     if (!this.isRunning) return;
 
     const elapsed = timestamp - this.lastFrameTime;
@@ -108,7 +105,7 @@ export class FramePacer {
       this.frameTimes.shift();
     }
 
-    // Calculate jitter (variance in frame times)
+    // Calculate jitter (standard deviation of frame times)
     if (this.frameTimes.length > 1) {
       const avg =
         this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
@@ -118,27 +115,16 @@ export class FramePacer {
       this.metrics.jitter = Math.sqrt(variance);
     }
 
-    // Detect dropped frames
+    // Detect missed frames (frame took longer than 1.5x target)
     if (elapsed > this.frameInterval * 1.5) {
-      const dropped = Math.floor(elapsed / this.frameInterval) - 1;
-      this.metrics.droppedFrames += dropped;
+      this.metrics.droppedFrames++;
     }
 
     this.metrics.totalFrames++;
-
-    // Execute callback
-    if (this.callback) {
-      try {
-        this.callback(timestamp, elapsed);
-      } catch (error) {
-        console.error('[FramePacer] Callback error:', error);
-      }
-    }
-
     this.lastFrameTime = timestamp;
     this.frameCount++;
 
-    // Schedule next frame
+    // Continue monitoring
     this.scheduleFrame();
   }
 
@@ -173,7 +159,7 @@ export class FramePacer {
 }
 
 // Singleton instance
-export const framePacer = new FramePacer();
+export const frameMonitor = new FrameMonitor();
 
 /**
  * Utility: High-resolution timestamp
@@ -181,15 +167,4 @@ export const framePacer = new FramePacer();
  */
 export function getHighResTimestamp() {
   return performance.now();
-}
-
-/**
- * Utility: Calculate smooth delta time
- * Clamps delta to prevent physics explosions on frame drops
- * @param {number} delta - Raw delta time
- * @param {number} maxDelta - Maximum allowed delta (default: 100ms)
- * @returns {number} Clamped delta time
- */
-export function smoothDelta(delta, maxDelta = 100) {
-  return Math.min(delta, maxDelta);
 }

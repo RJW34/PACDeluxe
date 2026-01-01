@@ -10,15 +10,12 @@ use sysinfo::System;
 use tauri::WebviewWindow;
 use tracing::{debug, info, warn};
 
-/// Performance statistics
+/// Performance statistics from native code
+/// Note: FPS is measured in JavaScript (frame-monitor.js), not here
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceStats {
-    pub fps: f64,
-    pub frame_time_ms: f64,
     pub cpu_usage: f32,
     pub memory_usage_mb: u64,
-    pub gpu_usage: Option<f32>,
-    pub frame_count: u64,
     pub uptime_secs: f64,
 }
 
@@ -26,7 +23,6 @@ pub struct PerformanceStats {
 pub struct PerformanceMonitor {
     start_time: Instant,
     system: Mutex<System>,
-    gpu_cache: Mutex<(Instant, Option<f32>)>,
 }
 
 impl PerformanceMonitor {
@@ -34,62 +30,23 @@ impl PerformanceMonitor {
         Self {
             start_time: Instant::now(),
             system: Mutex::new(System::new_all()),
-            gpu_cache: Mutex::new((Instant::now(), None)),
         }
     }
 
     pub fn get_stats(&self) -> PerformanceStats {
-        let mut system = self.system.lock().unwrap();
+        let mut system = self.system.lock().unwrap_or_else(|e| e.into_inner());
         system.refresh_cpu_usage();
         system.refresh_memory();
 
         let uptime = self.start_time.elapsed();
         let cpu_usage = system.global_cpu_usage();
         let memory_usage_mb = system.used_memory() / 1024 / 1024;
-        let gpu_usage = self.get_gpu_usage();
 
         PerformanceStats {
-            fps: 0.0,  // FPS is measured in JavaScript now
-            frame_time_ms: 0.0,
             cpu_usage,
             memory_usage_mb,
-            gpu_usage,
-            frame_count: 0,
             uptime_secs: uptime.as_secs_f64(),
         }
-    }
-
-    fn get_gpu_usage(&self) -> Option<f32> {
-        use std::process::Command;
-
-        let mut cache = self.gpu_cache.lock().unwrap();
-
-        // Only query every 2 seconds
-        if cache.0.elapsed().as_secs() < 2 {
-            return cache.1;
-        }
-
-        // Query GPU using PowerShell (more reliable than wmic on Windows 11)
-        let result = Command::new("powershell")
-            .args([
-                "-NoProfile", "-Command",
-                "(Get-Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples | Measure-Object -Property CookedValue -Maximum | Select-Object -ExpandProperty Maximum"
-            ])
-            .output();
-
-        let usage = match result {
-            Ok(output) if output.status.success() => {
-                String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .parse::<f32>()
-                    .ok()
-            }
-            _ => None,
-        };
-
-        cache.0 = Instant::now();
-        cache.1 = usage;
-        usage
     }
 }
 

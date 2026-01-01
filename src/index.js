@@ -13,8 +13,7 @@
  */
 
 // Performance modules
-export { RenderOptimizer, renderOptimizer } from './performance/render-optimizer.js';
-export { FramePacer, framePacer, getHighResTimestamp, smoothDelta } from './performance/frame-pacer.js';
+export { FrameMonitor, frameMonitor, getHighResTimestamp } from './performance/frame-monitor.js';
 export { InputOptimizer, inputOptimizer, requestHighPriorityCallback, getInputTimestamp } from './performance/input-optimizer.js';
 export { AssetCache, assetCache } from './performance/asset-cache.js';
 export { ProfilingOverlay, profilingOverlay } from './performance/profiling-overlay.js';
@@ -30,77 +29,94 @@ export async function initializePerformanceOptimizations(options = {}) {
   console.log('[PAC Deluxe] Initializing performance optimizations...');
 
   const {
-    enableRenderOptimizer = true,
-    enableFramePacer = false, // Optional, Phaser handles this
+    enableFrameMonitor = true,
     enableInputOptimizer = true,
     enableAssetCache = true,
     showProfilingOverlay = false,
   } = options;
 
+  const status = {
+    tauriBridge: false,
+    frameMonitor: false,
+    inputOptimizer: false,
+    assetCache: false,
+    profilingOverlay: false,
+  };
+
   // Initialize Tauri bridge
-  const { tauriBridge } = await import('./bridge/tauri-bridge.js');
-  await tauriBridge.init();
-
-  // Render optimizer will be initialized when Phaser game is ready
-  // It needs the game instance, so we expose it for manual init
-  if (enableRenderOptimizer && typeof window !== 'undefined') {
-    const { renderOptimizer } = await import('./performance/render-optimizer.js');
-    // Wait for Phaser game to be available
-    const initRenderOptimizer = () => {
-      if (window.game?.isBooted) {
-        renderOptimizer.init(window.game);
-      } else {
-        setTimeout(initRenderOptimizer, 100);
-      }
-    };
-    initRenderOptimizer();
+  try {
+    const { tauriBridge } = await import('./bridge/tauri-bridge.js');
+    await tauriBridge.init();
+    status.tauriBridge = tauriBridge.hasNativeFeatures();
+    if (!status.tauriBridge) {
+      console.warn('[PAC Deluxe] Running in browser mode - native optimizations unavailable');
+    }
+  } catch (error) {
+    console.error('[PAC Deluxe] Tauri bridge failed:', error.message);
   }
 
-  // Frame pacer is optional - Phaser has its own loop
-  // Only enable if explicitly requested for custom frame timing
-  if (enableFramePacer && typeof window !== 'undefined') {
-    const { framePacer } = await import('./performance/frame-pacer.js');
-    // Start the frame pacer for timing measurements
-    // The callback receives frame timing data that can be used for analysis
-    framePacer.start((timestamp, elapsed) => {
-      // Frame timing data is recorded internally by framePacer
-      // Emit custom event for any listeners that want frame timing
-      if (window.dispatchEvent) {
-        window.dispatchEvent(new CustomEvent('pac-frame', {
-          detail: { timestamp, elapsed }
-        }));
-      }
-    });
+  // Start frame monitor for FPS/timing metrics
+  if (enableFrameMonitor && typeof window !== 'undefined') {
+    try {
+      const { frameMonitor } = await import('./performance/frame-monitor.js');
+      frameMonitor.start();
+      status.frameMonitor = true;
+    } catch (error) {
+      console.error('[PAC Deluxe] Frame monitor failed:', error.message);
+    }
   }
 
-  // Initialize performance modules
+  // Initialize asset cache with fetch interception
   if (enableAssetCache) {
-    const { assetCache } = await import('./performance/asset-cache.js');
-    await assetCache.init({
-      maxSizeMB: options.cacheSizeMB || 512,
-    });
+    try {
+      const { assetCache } = await import('./performance/asset-cache.js');
+      await assetCache.init({
+        maxSizeMB: options.cacheSizeMB || 256,
+      });
+      status.assetCache = assetCache.isInitialized;
+    } catch (error) {
+      console.error('[PAC Deluxe] Asset cache failed:', error.message);
+    }
   }
 
+  // Initialize input optimizer
   if (enableInputOptimizer) {
-    const { inputOptimizer } = await import('./performance/input-optimizer.js');
-    inputOptimizer.init();
+    try {
+      const { inputOptimizer } = await import('./performance/input-optimizer.js');
+      inputOptimizer.init();
+      status.inputOptimizer = inputOptimizer.isInitialized;
+    } catch (error) {
+      console.error('[PAC Deluxe] Input optimizer failed:', error.message);
+    }
   }
 
+  // Show profiling overlay if requested
   if (showProfilingOverlay) {
-    const { profilingOverlay } = await import('./performance/profiling-overlay.js');
-    profilingOverlay.show();
+    try {
+      const { profilingOverlay } = await import('./performance/profiling-overlay.js');
+      profilingOverlay.show();
+      status.profilingOverlay = true;
+    } catch (error) {
+      console.error('[PAC Deluxe] Profiling overlay failed:', error.message);
+    }
   }
 
-  // Set high-performance mode if running in Tauri
-  if (tauriBridge.hasNativeFeatures()) {
-    await tauriBridge.setPowerMode('high_performance');
-  }
+  // Log initialization summary
+  const activeFeatures = Object.entries(status)
+    .filter(([_, v]) => v)
+    .map(([k]) => k);
+  const failedFeatures = Object.entries(status)
+    .filter(([_, v]) => !v)
+    .map(([k]) => k);
 
-  console.log('[PAC Deluxe] Performance optimizations initialized');
+  console.log(`[PAC Deluxe] Initialized: ${activeFeatures.join(', ') || 'none'}`);
+  if (failedFeatures.length > 0) {
+    console.warn(`[PAC Deluxe] Not available: ${failedFeatures.join(', ')}`);
+  }
 
   return {
-    tauriBridge,
-    isNative: tauriBridge.hasNativeFeatures(),
+    status,
+    isNative: status.tauriBridge,
   };
 }
 
@@ -110,14 +126,14 @@ export async function initializePerformanceOptimizations(options = {}) {
  */
 export async function getPerformanceStatus() {
   const { tauriBridge } = await import('./bridge/tauri-bridge.js');
-  const { framePacer } = await import('./performance/frame-pacer.js');
+  const { frameMonitor } = await import('./performance/frame-monitor.js');
   const { inputOptimizer } = await import('./performance/input-optimizer.js');
   const { assetCache } = await import('./performance/asset-cache.js');
 
   return {
     isNative: tauriBridge.hasNativeFeatures(),
     nativeStats: await tauriBridge.getPerformanceStats(),
-    frameMetrics: framePacer.getMetrics(),
+    frameMetrics: frameMonitor.getMetrics(),
     inputMetrics: inputOptimizer.getMetrics(),
     cacheStats: assetCache.getStats(),
   };

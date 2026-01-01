@@ -9,8 +9,7 @@
  */
 
 import { tauriBridge } from '../bridge/tauri-bridge.js';
-import { framePacer } from './frame-pacer.js';
-import { renderOptimizer } from './render-optimizer.js';
+import { frameMonitor } from './frame-monitor.js';
 
 /**
  * @typedef {Object} OverlayConfig
@@ -366,13 +365,12 @@ export class ProfilingOverlay {
   async update() {
     if (!this.isVisible || !this.container) return;
 
-    // Get metrics from various sources
-    const frameMetrics = framePacer.getMetrics();
-    const renderStats = renderOptimizer.getStats();
+    // Get metrics from frame monitor and native stats
+    const frameMetrics = frameMonitor.getMetrics();
     const nativeStats = await tauriBridge.getPerformanceStats();
 
-    // Calculate combined FPS
-    const fps = renderStats.fps || frameMetrics.currentFps || 0;
+    // Get FPS from frame monitor
+    const fps = frameMetrics.currentFps || 0;
 
     // Update FPS history for graph
     this.fpsHistory.push(fps);
@@ -384,8 +382,8 @@ export class ProfilingOverlay {
     this.updateMetric('pac-fps', `${Math.round(fps)}`, this.getFpsClass(fps));
     this.updateMetric(
       'pac-frametime',
-      `${renderStats.frameTime.toFixed(1)} ms`,
-      this.getFrameTimeClass(renderStats.frameTime)
+      `${frameMetrics.avgFrameTime.toFixed(1)} ms`,
+      this.getFrameTimeClass(frameMetrics.avgFrameTime)
     );
 
     if (nativeStats) {
