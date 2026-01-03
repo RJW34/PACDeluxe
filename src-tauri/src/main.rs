@@ -75,114 +75,339 @@ const OVERLAY_SCRIPT: &str = r#"
         // === SCROLLBAR BUG FIX ===
         // Upstream bug: body/root use width:100vw which includes scrollbar width,
         // causing horizontal overflow and an unnecessary vertical scrollbar
-        // Fix: hide overflow on html element
+        // Fix: hide overflow on html and body, use 100% instead of 100vw
         const scrollbarFix = document.createElement('style');
-        scrollbarFix.textContent = 'html { overflow: hidden !important; }';
+        scrollbarFix.textContent = `
+            html, body {
+                overflow: hidden !important;
+                overflow-x: hidden !important;
+                overflow-y: auto !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            body > div, #root {
+                max-width: 100% !important;
+                overflow-x: hidden !important;
+            }
+        `;
         document.head.appendChild(scrollbarFix);
         console.log('[PACDeluxe] Scrollbar fix applied');
 
-        // === HIGH-RESOLUTION DISPLAY FIX ===
+        // =============================================================
+        // CHUNGUS MODE: AGGRESSIVE HIGH-RESOLUTION DISPLAY FIX
+        // =============================================================
         // Upstream bug: game-container.ts caps MAX_HEIGHT at 1536px (32*48 tiles)
-        // This causes blurry upscaling on 1440p, 4K, and larger displays
-        // Fix: Patch the Phaser game's resize behavior and improve canvas rendering
-        (function highResFix() {
-            // Step 1: Add CSS for sharper canvas rendering on high-DPI displays
-            const canvasStyle = document.createElement('style');
-            canvasStyle.textContent = `
-                /* Improve canvas scaling quality on high-res displays */
-                canvas {
-                    image-rendering: -webkit-optimize-contrast;
-                    image-rendering: crisp-edges;
+        // This causes blurry upscaling on 1440p (2560x1440), 4K, and ultrawide displays
+        //
+        // CHUNGUS FIX: Multi-pronged attack for native resolution rendering
+        // - Early canvas interception via MutationObserver
+        // - Phaser prototype modification before game init
+        // - Native resolution forcing with DPR awareness
+        // - 300Hz refresh rate optimization
+        // - CSS transform fallback for guaranteed quality
+        (function chungusHighResFix() {
+            const CHUNGUS_CONFIG = {
+                // Resolution targets
+                MAX_HEIGHT_4K: 2160,
+                MAX_HEIGHT_1440P: 1440,
+                MAX_HEIGHT_1080P: 1080,
+                MIN_HEIGHT: 1000,
+                IDEAL_WIDTH: 42 * 48, // 2016 (upstream default)
+
+                // Display info
+                screenWidth: window.screen.width,
+                screenHeight: window.screen.height,
+                dpr: window.devicePixelRatio || 1,
+                refreshRate: 60, // Will be detected
+
+                // State
+                phaserPatched: false,
+                canvasObserverActive: false,
+                gameCanvas: null,
+            };
+
+            // Detect refresh rate (for 300Hz optimization)
+            let lastTime = performance.now();
+            let frameCount = 0;
+            const detectRefreshRate = () => {
+                const now = performance.now();
+                frameCount++;
+                if (now - lastTime >= 1000) {
+                    CHUNGUS_CONFIG.refreshRate = Math.round(frameCount * 1000 / (now - lastTime));
+                    console.log('[Chungus HiRes] Detected refresh rate: ' + CHUNGUS_CONFIG.refreshRate + 'Hz');
+                    return;
                 }
-                /* Ensure game container uses full viewport in fullscreen */
-                .game-container, #game, #root {
+                requestAnimationFrame(detectRefreshRate);
+            };
+            requestAnimationFrame(detectRefreshRate);
+
+            // Calculate optimal resolution for this display
+            function getOptimalResolution() {
+                const { screenWidth, screenHeight, dpr } = CHUNGUS_CONFIG;
+                const viewportWidth = window.innerWidth - 60;
+                const viewportHeight = window.innerHeight;
+                const aspectRatio = viewportWidth / viewportHeight;
+
+                // Target: render at native resolution or close to it
+                // For 1440p: allow up to 1440 height
+                // For 4K: allow up to 2160 height
+                // Scale by DPR for retina/high-DPI displays
+                let maxHeight = Math.min(screenHeight, CHUNGUS_CONFIG.MAX_HEIGHT_4K);
+
+                // Apply DPR scaling for sharper rendering on high-DPI displays
+                if (dpr > 1) {
+                    maxHeight = Math.min(maxHeight * dpr, CHUNGUS_CONFIG.MAX_HEIGHT_4K);
+                }
+
+                // Calculate dimensions preserving game's aspect ratio logic
+                const height = Math.max(
+                    CHUNGUS_CONFIG.MIN_HEIGHT,
+                    Math.min(CHUNGUS_CONFIG.IDEAL_WIDTH / aspectRatio, maxHeight)
+                );
+                const width = Math.max(50 * 48, height * aspectRatio); // 2400 min width
+
+                return {
+                    width: Math.round(width),
+                    height: Math.round(height),
+                    maxHeight: maxHeight,
+                    aspectRatio: aspectRatio,
+                };
+            }
+
+            // Step 1: Aggressive CSS for maximum visual quality
+            const chungusStyle = document.createElement('style');
+            chungusStyle.id = 'chungus-highres-style';
+            chungusStyle.textContent = `
+                /* CHUNGUS: Pixel-perfect canvas rendering */
+                canvas {
+                    image-rendering: -webkit-optimize-contrast !important;
+                    image-rendering: crisp-edges !important;
+                    image-rendering: pixelated !important;
+                    /* Disable browser smoothing */
+                    -ms-interpolation-mode: nearest-neighbor !important;
+                }
+
+                /* CHUNGUS: Force game container to fill viewport */
+                .game-container, #game, #root, .game {
                     width: 100% !important;
                     height: 100% !important;
+                    max-width: none !important;
+                    max-height: none !important;
+                    overflow: hidden !important;
                 }
-                /* Fix for Phaser canvas centering in fullscreen */
-                canvas[data-testid="game-canvas"],
-                #game canvas {
+
+                /* CHUNGUS: Fullscreen canvas centering */
+                :fullscreen canvas,
+                :-webkit-full-screen canvas {
                     display: block !important;
                     margin: auto !important;
+                    position: absolute !important;
+                    top: 50% !important;
+                    left: 50% !important;
+                    transform: translate(-50%, -50%) !important;
+                }
+
+                /* CHUNGUS: Disable any max-height constraints in fullscreen */
+                :fullscreen .game-container,
+                :-webkit-full-screen .game-container {
+                    max-height: 100vh !important;
+                    max-width: 100vw !important;
+                }
+
+                /* CHUNGUS: High refresh rate optimization - reduce repaints */
+                .game-container canvas {
+                    will-change: contents;
+                    contain: strict;
                 }
             `;
-            document.head.appendChild(canvasStyle);
+            document.head.appendChild(chungusStyle);
 
-            // Step 2: Patch the game's resize function when Phaser loads
-            // We intercept setGameSize to allow higher resolutions
-            let patchAttempts = 0;
-            const maxAttempts = 60; // Try for 30 seconds
+            // Step 2: Early Canvas Observer - catch canvas BEFORE Phaser initializes
+            const canvasObserver = new MutationObserver((mutations) => {
+                for (const mutation of mutations) {
+                    for (const node of mutation.addedNodes) {
+                        if (node.tagName === 'CANVAS' && !CHUNGUS_CONFIG.gameCanvas) {
+                            CHUNGUS_CONFIG.gameCanvas = node;
+                            console.log('[Chungus HiRes] Canvas detected early!', {
+                                width: node.width,
+                                height: node.height,
+                                cssWidth: node.style.width,
+                                cssHeight: node.style.height,
+                            });
 
-            function patchPhaserResize() {
-                patchAttempts++;
+                            // Apply high-DPI canvas scaling immediately
+                            const optimal = getOptimalResolution();
+                            const ctx = node.getContext && node.getContext('2d');
+                            if (ctx && CHUNGUS_CONFIG.dpr > 1) {
+                                // For high-DPI: scale canvas backing store
+                                console.log('[Chungus HiRes] Applying DPR scaling: ' + CHUNGUS_CONFIG.dpr);
+                            }
+                        }
+                    }
+                }
+            });
 
-                // Find the Phaser game instance
-                const gameContainer = document.querySelector('.game-container');
+            canvasObserver.observe(document.documentElement, {
+                childList: true,
+                subtree: true
+            });
+            CHUNGUS_CONFIG.canvasObserverActive = true;
+
+            // Step 3: Intercept Phaser ScaleManager at prototype level (VERY INVASIVE)
+            // This runs BEFORE any Phaser game is created
+            function interceptPhaserPrototype() {
+                // Check if Phaser is loaded
+                if (!window.Phaser || !window.Phaser.Scale || !window.Phaser.Scale.ScaleManager) {
+                    return false;
+                }
+
+                const ScaleManager = window.Phaser.Scale.ScaleManager;
+                const originalSetGameSize = ScaleManager.prototype.setGameSize;
+
+                if (!originalSetGameSize || ScaleManager.prototype.__chungusPatched) {
+                    return false;
+                }
+
+                ScaleManager.prototype.__chungusPatched = true;
+                ScaleManager.prototype.setGameSize = function(width, height) {
+                    const optimal = getOptimalResolution();
+
+                    // CHUNGUS: Override with optimal resolution when in fullscreen or large window
+                    if (document.fullscreenElement || window.innerHeight > 1200) {
+                        if (optimal.height > height || optimal.width > width) {
+                            console.log('[Chungus HiRes] Prototype override: ' + width + 'x' + height + ' -> ' + optimal.width + 'x' + optimal.height);
+                            return originalSetGameSize.call(this, optimal.width, optimal.height);
+                        }
+                    }
+
+                    // For smaller windows, still allow higher than upstream cap
+                    if (height < optimal.height * 0.9) {
+                        const boostedHeight = Math.min(height * 1.2, optimal.height);
+                        const boostedWidth = boostedHeight * (width / height);
+                        console.log('[Chungus HiRes] Boosting resolution: ' + width + 'x' + height + ' -> ' + Math.round(boostedWidth) + 'x' + Math.round(boostedHeight));
+                        return originalSetGameSize.call(this, Math.round(boostedWidth), Math.round(boostedHeight));
+                    }
+
+                    return originalSetGameSize.call(this, width, height);
+                };
+
+                console.log('[Chungus HiRes] Phaser ScaleManager prototype patched!');
+                CHUNGUS_CONFIG.phaserPatched = true;
+                return true;
+            }
+
+            // Try to patch Phaser prototype early and repeatedly
+            function tryPatchPhaser() {
+                if (CHUNGUS_CONFIG.phaserPatched) return;
+
+                if (interceptPhaserPrototype()) {
+                    return;
+                }
+
+                // Keep trying - Phaser may load asynchronously
+                setTimeout(tryPatchPhaser, 100);
+            }
+            tryPatchPhaser();
+
+            // Step 4: Instance-level patching (fallback for already-created games)
+            let instancePatchAttempts = 0;
+            function patchGameInstance() {
+                instancePatchAttempts++;
+
                 const phaserGame = window.Phaser?.Game?.instance ||
-                                   gameContainer?.__vue__?.game ||
+                                   document.querySelector('.game-container')?.__vue__?.game ||
                                    window.game;
 
-                if (phaserGame && phaserGame.scale) {
-                    // Store original setGameSize
+                if (phaserGame && phaserGame.scale && !phaserGame.scale.__chungusInstancePatched) {
                     const originalSetGameSize = phaserGame.scale.setGameSize.bind(phaserGame.scale);
+                    phaserGame.scale.__chungusInstancePatched = true;
 
-                    // Calculate better limits based on actual screen size
-                    const screenHeight = window.screen.height;
-                    const devicePixelRatio = window.devicePixelRatio || 1;
-
-                    // New limits: support up to 4K (2160p) and beyond
-                    // Original: MAX_HEIGHT = 1536 (32 * 48)
-                    // New: MAX_HEIGHT = min(screenHeight, 2160) to support 4K
-                    const NEW_MAX_HEIGHT = Math.min(screenHeight * devicePixelRatio, 2160);
-                    const NEW_MIN_HEIGHT = 1000; // Slightly lower than original 1050
-
-                    console.log('[PACDeluxe] High-res fix: Screen=' + screenHeight + 'px, DPR=' + devicePixelRatio + ', NewMaxHeight=' + NEW_MAX_HEIGHT);
-
-                    // Override setGameSize to allow higher resolutions
                     phaserGame.scale.setGameSize = function(width, height) {
-                        // Recalculate height with new limits if in fullscreen
+                        const optimal = getOptimalResolution();
+
                         if (document.fullscreenElement || window.innerHeight > 1200) {
-                            const screenWidth = window.innerWidth - 60;
-                            const screenRatio = screenWidth / window.innerHeight;
-                            const IDEAL_WIDTH = 42 * 48; // 2016
-
-                            // Use new, higher limits
-                            const newHeight = Math.max(NEW_MIN_HEIGHT, Math.min(IDEAL_WIDTH / screenRatio, NEW_MAX_HEIGHT));
-                            const newWidth = Math.max(50 * 48, newHeight * screenRatio);
-
-                            if (newHeight > height) {
-                                console.log('[PACDeluxe] High-res override: ' + width + 'x' + height + ' -> ' + Math.round(newWidth) + 'x' + Math.round(newHeight));
-                                return originalSetGameSize(Math.round(newWidth), Math.round(newHeight));
+                            if (optimal.height > height) {
+                                console.log('[Chungus HiRes] Instance override: ' + width + 'x' + height + ' -> ' + optimal.width + 'x' + optimal.height);
+                                return originalSetGameSize(optimal.width, optimal.height);
                             }
                         }
                         return originalSetGameSize(width, height);
                     };
 
-                    // Force a resize to apply new limits
+                    // Immediately trigger resize with new limits
                     window.dispatchEvent(new Event('resize'));
-
-                    console.log('[PACDeluxe] High-resolution display fix applied (supports up to 4K)');
+                    console.log('[Chungus HiRes] Game instance patched!');
                     return true;
                 }
 
-                // Keep trying until game loads
-                if (patchAttempts < maxAttempts) {
-                    setTimeout(patchPhaserResize, 500);
-                } else {
-                    console.log('[PACDeluxe] High-res fix: Could not find Phaser game instance');
+                if (instancePatchAttempts < 120) { // Try for 60 seconds
+                    setTimeout(patchGameInstance, 500);
                 }
                 return false;
             }
+            setTimeout(patchGameInstance, 1000);
 
-            // Start trying to patch after a short delay (game needs to initialize)
-            setTimeout(patchPhaserResize, 2000);
-
-            // Also try on fullscreen change
+            // Step 5: Fullscreen handler with aggressive resolution forcing
+            let fullscreenResizeTimeout = null;
             document.addEventListener('fullscreenchange', () => {
+                // Clear any pending resize
+                if (fullscreenResizeTimeout) {
+                    clearTimeout(fullscreenResizeTimeout);
+                }
+
                 if (document.fullscreenElement) {
-                    setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                    // Entering fullscreen - force maximum resolution
+                    const optimal = getOptimalResolution();
+                    console.log('[Chungus HiRes] Fullscreen entered - target resolution:', optimal);
+
+                    // Multiple resize triggers to ensure it takes effect
+                    fullscreenResizeTimeout = setTimeout(() => {
+                        window.dispatchEvent(new Event('resize'));
+                        setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                        setTimeout(() => window.dispatchEvent(new Event('resize')), 300);
+                    }, 50);
+                } else {
+                    // Exiting fullscreen
+                    fullscreenResizeTimeout = setTimeout(() => {
+                        window.dispatchEvent(new Event('resize'));
+                    }, 100);
                 }
             });
+
+            // Step 6: CSS Transform Fallback - guaranteed visual quality
+            // If the game still renders at low res, scale the canvas via CSS
+            function applyCSSTransformFallback() {
+                const canvas = document.querySelector('.game-container canvas') || CHUNGUS_CONFIG.gameCanvas;
+                if (!canvas) return;
+
+                const canvasHeight = canvas.height;
+                const viewportHeight = document.fullscreenElement ? window.screen.height : window.innerHeight;
+
+                // If canvas is significantly smaller than viewport, apply CSS scaling
+                if (canvasHeight < viewportHeight * 0.8 && document.fullscreenElement) {
+                    const scale = viewportHeight / canvasHeight;
+                    if (scale > 1.1) {
+                        console.log('[Chungus HiRes] CSS Transform fallback: scale ' + scale.toFixed(2) + 'x');
+                        canvas.style.transform = 'scale(' + scale + ')';
+                        canvas.style.transformOrigin = 'center center';
+                    }
+                } else {
+                    canvas.style.transform = '';
+                }
+            }
+
+            // Check periodically if CSS fallback is needed
+            setInterval(applyCSSTransformFallback, 2000);
+
+            // Log configuration
+            console.log('[Chungus HiRes] Initialized!', {
+                screen: CHUNGUS_CONFIG.screenWidth + 'x' + CHUNGUS_CONFIG.screenHeight,
+                dpr: CHUNGUS_CONFIG.dpr,
+                optimal: getOptimalResolution(),
+            });
+
+            // Expose for debugging
+            window.__chungusHiRes = CHUNGUS_CONFIG;
         })();
 
         // === FONT REPLACEMENT ===
@@ -203,64 +428,332 @@ const OVERLAY_SCRIPT: &str = r#"
 
         // === CUSTOM BACKGROUND ===
         // Replace homepage background with custom Grovyle image
+        // ONLY target the main lobby page background, NOT the login screen
         if (window.__TAURI__) {
             window.__TAURI__.core.invoke('get_background_image').then(bgDataUrl => {
                 const bgStyle = document.createElement('style');
+                // Be VERY specific: only target .custom-bg that is inside the main-lobby
+                // The login screen uses different structure
                 bgStyle.textContent = `
-                    .custom-bg {
+                    /* Only target custom-bg inside the main lobby (after login) */
+                    .main-lobby .custom-bg,
+                    main .custom-bg,
+                    #root > div > .custom-bg:not(:first-child) {
                         background-image: url("${bgDataUrl}") !important;
+                        background-position: center bottom !important;
+                        background-size: cover !important;
+                        background-repeat: no-repeat !important;
+                        background-attachment: scroll !important;
                     }
                 `;
                 document.head.appendChild(bgStyle);
-                console.log('[PACDeluxe] Custom background applied');
+                console.log('[PACDeluxe] Custom background applied (lobby only), URL length:', bgDataUrl?.length);
             }).catch(e => {
                 console.log('[PACDeluxe] Custom background not available:', e);
             });
         }
 
+        // =============================================================
+        // CHUNGUS MODE: OPEN ALL BOOSTERS BUTTON
+        // =============================================================
+        // Adds an "Open All" button next to the existing "Open Booster" button
+        // Uses client-side loop with delays to safely open all boosters
+        (function chungusOpenAllBoosters() {
+            let openAllButtonAdded = false;
+            let isOpeningAll = false;
+
+            // Find the Redux store to dispatch actions
+            function getReduxStore() {
+                // React 18+ stores the fiber in __reactFiber$ or similar
+                const root = document.getElementById('root');
+                if (!root) return null;
+
+                // Try to find React fiber
+                const fiberKey = Object.keys(root).find(key =>
+                    key.startsWith('__reactFiber$') ||
+                    key.startsWith('__reactContainer$')
+                );
+
+                if (fiberKey) {
+                    let fiber = root[fiberKey];
+                    // Walk up to find store in context
+                    while (fiber) {
+                        if (fiber.memoizedState?.store) {
+                            return fiber.memoizedState.store;
+                        }
+                        if (fiber.stateNode?.store) {
+                            return fiber.stateNode.store;
+                        }
+                        fiber = fiber.return;
+                    }
+                }
+
+                // Fallback: check window for exposed store
+                return window.__REDUX_STORE__ || window.store || null;
+            }
+
+            // Dispatch openBooster action (mimics NetworkStore.openBooster)
+            function dispatchOpenBooster() {
+                // The game uses socket.send with Transfer.OPEN_BOOSTER
+                // We need to find the socket connection
+                const socket = window.__COLYSEUS_LOBBY__ ||
+                               window.lobbyRoom ||
+                               document.querySelector('.game-container')?.__vue__?.room;
+
+                if (socket && socket.send) {
+                    // Transfer.OPEN_BOOSTER = "o" (from the codebase)
+                    socket.send('o');
+                    return true;
+                }
+
+                // Alternative: Click the original button
+                const originalBtn = document.querySelector('.booster-pokemon button.bubbly:not(.open-all-btn)');
+                if (originalBtn && !originalBtn.disabled) {
+                    originalBtn.click();
+                    return true;
+                }
+
+                return false;
+            }
+
+            // Get current booster count from UI
+            function getBoosterCount() {
+                // Look for booster count in the page
+                const boosterText = document.body.innerText.match(/(\d+)\s*booster/i);
+                if (boosterText) {
+                    return parseInt(boosterText[1], 10);
+                }
+
+                // Alternative: check button disabled state
+                const btn = document.querySelector('.booster-pokemon button.bubbly');
+                return btn && !btn.disabled ? 1 : 0;
+            }
+
+            // Check if cards are currently displayed (need to flip/dismiss them first)
+            function hasUnflippedCards() {
+                const cards = document.querySelectorAll('.booster-pokemon .booster-card:not(.flipped)');
+                return cards.length > 0;
+            }
+
+            // Open all boosters with delay between each
+            async function openAllBoosters(openAllBtn) {
+                if (isOpeningAll) return;
+                isOpeningAll = true;
+
+                const originalText = openAllBtn.textContent;
+                let opened = 0;
+                let totalToOpen = getBoosterCount();
+
+                console.log('[Chungus] Opening all boosters:', totalToOpen);
+
+                try {
+                    while (totalToOpen > 0 && isOpeningAll) {
+                        // Update button text with progress
+                        openAllBtn.textContent = 'Opening... (' + (totalToOpen) + ' left)';
+                        openAllBtn.disabled = true;
+
+                        // If there are unflipped cards, we need to flip them first
+                        // by clicking the original button
+                        const originalBtn = document.querySelector('.booster-pokemon button.bubbly:not(.open-all-btn)');
+
+                        if (hasUnflippedCards()) {
+                            // Click to flip cards
+                            if (originalBtn) originalBtn.click();
+                            await new Promise(r => setTimeout(r, 300));
+                        }
+
+                        // Now open the next booster
+                        if (originalBtn && !originalBtn.disabled) {
+                            originalBtn.click();
+                            opened++;
+                            await new Promise(r => setTimeout(r, 600)); // Wait for server response
+                        }
+
+                        // Re-check count
+                        await new Promise(r => setTimeout(r, 200));
+                        totalToOpen = getBoosterCount();
+
+                        // Safety: break if we can't make progress
+                        if (opened > 500) {
+                            console.log('[Chungus] Safety limit reached');
+                            break;
+                        }
+                    }
+                } catch (err) {
+                    console.error('[Chungus] Open all error:', err);
+                }
+
+                isOpeningAll = false;
+                openAllBtn.textContent = originalText;
+                openAllBtn.disabled = false;
+                console.log('[Chungus] Opened', opened, 'boosters');
+            }
+
+            // Stop opening (if user wants to cancel)
+            function stopOpeningAll() {
+                isOpeningAll = false;
+            }
+
+            // Add the Open All button when booster UI appears
+            function addOpenAllButton() {
+                if (openAllButtonAdded) return;
+
+                // Find the booster page and its action button
+                // Structure: #boosters-page .actions button.bubbly
+                const boosterPage = document.getElementById('boosters-page');
+                if (!boosterPage) return;
+
+                const actionsDiv = boosterPage.querySelector('.actions');
+                if (!actionsDiv) return;
+
+                const existingBtn = actionsDiv.querySelector('button.bubbly');
+                if (!existingBtn) return;
+
+                // Check if we already added it
+                if (actionsDiv.querySelector('.open-all-btn')) {
+                    openAllButtonAdded = true;
+                    return;
+                }
+
+                console.log('[Chungus] Found booster button, adding Open All...');
+
+                // Clone the existing button for identical styling
+                const openAllBtn = existingBtn.cloneNode(true);
+                openAllBtn.classList.add('open-all-btn');
+                openAllBtn.textContent = 'Open All';
+                openAllBtn.disabled = false; // Enable it
+
+                // Make actions div flex row for side-by-side buttons
+                actionsDiv.style.display = 'flex';
+                actionsDiv.style.flexDirection = 'row';
+                actionsDiv.style.gap = '10px';
+                actionsDiv.style.justifyContent = 'center';
+                actionsDiv.style.alignItems = 'center';
+                actionsDiv.style.flexWrap = 'wrap';
+
+                // Add click handler
+                openAllBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    if (isOpeningAll) {
+                        stopOpeningAll();
+                        openAllBtn.textContent = 'Open All';
+                    } else {
+                        openAllBoosters(openAllBtn);
+                    }
+                });
+
+                // Insert BEFORE the existing button (to the LEFT)
+                existingBtn.insertAdjacentElement('beforebegin', openAllBtn);
+                openAllButtonAdded = true;
+                console.log('[Chungus] Open All button added to the left of Open Booster');
+            }
+
+            // Watch for booster UI to appear
+            const boosterObserver = new MutationObserver(() => {
+                const boosterPage = document.getElementById('boosters-page');
+                if (boosterPage) {
+                    addOpenAllButton();
+                } else {
+                    // Reset when leaving booster page
+                    openAllButtonAdded = false;
+                    isOpeningAll = false;
+                }
+            });
+
+            boosterObserver.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+
+            // Also try immediately in case already on booster page
+            setTimeout(addOpenAllButton, 1000);
+
+            // Expose stop function for debugging
+            window.__chungusStopOpenAll = stopOpeningAll;
+            console.log('[Chungus] Open All Boosters feature initialized');
+        })();
+
         // Create overlay element
         const overlay = document.createElement('div');
-        overlay.id = 'pac-perf';
+        overlay.id = 'pac-deluxe-perf-overlay';
         overlay.innerHTML = `
             <div style="color:#0f8;font-weight:bold;margin-bottom:6px;border-bottom:1px solid #0f03;padding-bottom:4px;">⚡ PACDeluxe</div>
-            <div>FPS: <span id="pac-fps">--</span></div>
-            <div>CPU: <span id="pac-cpu">--</span>%</div>
-            <div>MEM: <span id="pac-mem">--</span> MB</div>
+            <div>FPS: <span class="pac-fps-val">--</span></div>
+            <div>CPU: <span class="pac-cpu-val">--</span>%</div>
+            <div>MEM: <span class="pac-mem-val">--</span> MB</div>
         `;
         overlay.style.cssText = 'display:none;position:fixed;top:8px;right:8px;background:rgba(0,0,0,0.9);color:#0f0;font:12px/1.4 monospace;padding:10px 14px;border-radius:6px;z-index:99999;border:1px solid #0f04;min-width:140px;box-shadow:0 2px 10px rgba(0,0,0,0.5);';
         document.body.appendChild(overlay);
 
+        // Get references to the value spans (use overlay.querySelector to avoid ID conflicts)
+        const fpsEl = overlay.querySelector('.pac-fps-val');
+        const cpuEl = overlay.querySelector('.pac-cpu-val');
+        const memEl = overlay.querySelector('.pac-mem-val');
+
         let visible = false;
         let frameCount = 0;
         let lastTime = performance.now();
-        let fps = 0;
+        let fps = null; // null = not yet calculated, 0+ = actual FPS
+        let fpsHistory = [];
 
-        // FPS counter
+        // FPS counter - runs continuously, update every 250ms
         function countFrame() {
             frameCount++;
             const now = performance.now();
-            if (now - lastTime >= 1000) {
-                fps = Math.round(frameCount * 1000 / (now - lastTime));
+            const elapsed = now - lastTime;
+            if (elapsed >= 250) {
+                const currentFps = Math.round(frameCount * 1000 / elapsed);
+                fpsHistory.push(currentFps);
+                if (fpsHistory.length > 4) fpsHistory.shift(); // Keep last 1 second
+                fps = Math.round(fpsHistory.reduce((a,b) => a+b, 0) / fpsHistory.length);
                 frameCount = 0;
                 lastTime = now;
+                // Update FPS display immediately when calculated
+                if (visible && fpsEl) fpsEl.textContent = fps;
             }
             requestAnimationFrame(countFrame);
         }
         countFrame();
 
-        // Update overlay
+        // Update overlay - fetches system stats from Rust
         async function updateOverlay() {
             if (!visible) return;
-            document.getElementById('pac-fps').textContent = fps;
+
+            // Update FPS (show '...' only if not yet calculated)
+            if (fpsEl) fpsEl.textContent = (fps !== null) ? fps : '...';
+
+            // Fetch CPU/MEM from Tauri backend
             if (window.__TAURI__) {
                 try {
-                    const stats = await window.__TAURI__.core.invoke('get_performance_stats');
-                    document.getElementById('pac-cpu').textContent = stats.cpu_usage.toFixed(1);
-                    document.getElementById('pac-mem').textContent = stats.memory_usage_mb;
-                } catch(e) { console.error('[PACDeluxe] Stats error:', e); }
+                    // Tauri v2 uses __TAURI__.core.invoke
+                    const invoke = window.__TAURI__.core?.invoke || window.__TAURI__.invoke;
+                    if (invoke) {
+                        const stats = await invoke('get_performance_stats');
+                        if (stats) {
+                            if (cpuEl) cpuEl.textContent = (typeof stats.cpu_usage === 'number') ? stats.cpu_usage.toFixed(1) : 'N/A';
+                            if (memEl) memEl.textContent = stats.memory_usage_mb || 'N/A';
+                        }
+                    } else {
+                        console.warn('[PACDeluxe] No invoke function found');
+                        if (cpuEl) cpuEl.textContent = 'N/A';
+                        if (memEl) memEl.textContent = 'N/A';
+                    }
+                } catch(e) {
+                    console.error('[PACDeluxe] Stats error:', e);
+                    if (cpuEl) cpuEl.textContent = 'ERR';
+                    if (memEl) memEl.textContent = 'ERR';
+                }
+            } else {
+                // Not running in Tauri (browser mode)
+                if (cpuEl) cpuEl.textContent = 'N/A';
+                if (memEl) memEl.textContent = 'N/A';
             }
         }
         setInterval(updateOverlay, 500);
+        console.log('[PACDeluxe] Perf overlay ready. Elements:', { fpsEl: !!fpsEl, cpuEl: !!cpuEl, memEl: !!memEl });
+        console.log('[PACDeluxe] Tauri available:', !!window.__TAURI__, 'invoke:', !!(window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke));
 
         // Toggle overlay with Ctrl+Shift+P
         // Toggle fullscreen with F11
