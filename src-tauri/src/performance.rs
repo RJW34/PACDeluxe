@@ -60,9 +60,26 @@ impl Default for PerformanceMonitor {
 /// Flag to track if WebView2 optimization thread is running
 static WEBVIEW_OPTIMIZER_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// Enable per-monitor DPI awareness for crisp rendering on high-DPI displays
+fn enable_dpi_awareness() {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+
+    unsafe {
+        match SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) {
+            Ok(_) => info!("Enabled per-monitor DPI awareness v2"),
+            Err(e) => debug!("DPI awareness already set or failed: {:?}", e),
+        }
+    }
+}
+
 /// Apply Windows system optimizations
 pub fn apply_system_optimizations() {
     info!("Applying Windows performance optimizations");
+
+    // Enable DPI awareness first
+    enable_dpi_awareness();
 
     use windows::Win32::System::Threading::{
         GetCurrentProcess, SetPriorityClass, SetProcessPriorityBoost,
