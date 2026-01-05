@@ -6,9 +6,11 @@ mod commands;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri::webview::NewWindowResponse;
-use tracing::{info, debug, Level};
+use tracing::{info, debug, warn, Level};
 use tracing_subscriber::FmtSubscriber;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Counter for unique popup window labels
 static POPUP_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -202,8 +204,21 @@ fn main() {
                 let label = format!("auth-popup-{}", popup_id);
                 debug!("Opening popup window: {} -> {}", label, url);
 
-                let app_handle_clone = app_handle.clone();
-                let label_clone = label.clone();
+                // Shared state for popup lifecycle management
+                let auth_completed = Arc::new(AtomicBool::new(false));
+                let popup_closed = Arc::new(AtomicBool::new(false));
+                let popup_start = Instant::now();
+
+                // Clone handles for various closures
+                let app_for_nav = app_handle.clone();
+                let label_for_nav = label.clone();
+                let auth_completed_nav = auth_completed.clone();
+                let popup_closed_nav = popup_closed.clone();
+
+                let app_for_timeout = app_handle.clone();
+                let label_for_timeout = label.clone();
+                let auth_completed_timeout = auth_completed.clone();
+                let popup_closed_timeout = popup_closed.clone();
 
                 let popup = WebviewWindowBuilder::new(
                     &app_handle,
@@ -216,38 +231,95 @@ fn main() {
                 .center()
                 .focused(true)
                 .always_on_top(true)
-                // Close popup when Firebase auth callback completes
-                .on_navigation(|url| {
-                    // Allow all navigation in auth popup
-                    debug!("Auth popup navigating to: {}", url);
-                    true
+                // Detect auth completion via navigation events (fires before page load)
+                .on_navigation(move |nav_url| {
+                    let url_str = nav_url.to_string();
+                    debug!("Auth popup navigating to: {}", url_str);
+
+                    // Firebase auth callback patterns:
+                    // - /__/auth/handler?code=... (OAuth success)
+                    // - /__/auth/handler?error=... (OAuth error/cancel)
+                    let is_auth_callback = url_str.contains("/__/auth/handler");
+                    let has_code = url_str.contains("code=");
+                    let has_error = url_str.contains("error=");
+
+                    if is_auth_callback && (has_code || has_error) {
+                        if has_code {
+                            debug!("Auth success detected, scheduling popup close");
+                        } else {
+                            debug!("Auth cancelled/error detected, scheduling popup close");
+                        }
+
+                        // Mark auth as completed
+                        auth_completed_nav.store(true, Ordering::SeqCst);
+
+                        // Close popup after a brief delay to allow redirect to complete
+                        if !popup_closed_nav.swap(true, Ordering::SeqCst) {
+                            let app = app_for_nav.clone();
+                            let label = label_for_nav.clone();
+                            std::thread::spawn(move || {
+                                // Short delay to let the auth flow complete
+                                std::thread::sleep(Duration::from_millis(300));
+                                if let Some(win) = app.get_webview_window(&label) {
+                                    match win.close() {
+                                        Ok(_) => debug!("Auth popup {} closed successfully", label),
+                                        Err(e) => warn!("Failed to close auth popup {}: {}", label, e),
+                                    }
+                                }
+                            });
+                        }
+                    }
+
+                    true // Allow all navigation
                 })
                 .on_page_load(move |_webview, payload| {
-                    let url = payload.url().to_string();
-                    debug!("Auth popup loaded: {}", url);
-
-                    // Firebase auth callback URL pattern - close after auth completes
-                    // Check for the callback with auth code (successful login)
-                    if url.contains("/__/auth/handler") && url.contains("code=") {
-                        debug!("Auth complete, closing popup via Rust");
-                        // Close from Rust side - window.close() doesn't work in WebView2
-                        let app = app_handle_clone.clone();
-                        let label = label_clone.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_millis(500));
-                            if let Some(win) = app.get_webview_window(&label) {
-                                let _ = win.close();
-                                debug!("Popup {} closed", label);
-                            }
-                        });
-                    }
+                    debug!("Auth popup page loaded: {}", payload.url());
                 })
                 .build();
 
                 match popup {
-                    Ok(window) => NewWindowResponse::Create { window },
+                    Ok(window) => {
+                        // Start timeout watchdog thread to prevent orphaned popups
+                        std::thread::spawn(move || {
+                            const POPUP_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+                            const CHECK_INTERVAL: Duration = Duration::from_secs(10);
+
+                            loop {
+                                std::thread::sleep(CHECK_INTERVAL);
+
+                                // Exit if popup already closed or auth completed
+                                if popup_closed_timeout.load(Ordering::SeqCst) {
+                                    debug!("Popup timeout watchdog: popup already closed");
+                                    break;
+                                }
+
+                                if auth_completed_timeout.load(Ordering::SeqCst) {
+                                    debug!("Popup timeout watchdog: auth completed normally");
+                                    break;
+                                }
+
+                                // Check if timeout exceeded
+                                if popup_start.elapsed() >= POPUP_TIMEOUT {
+                                    warn!("Auth popup {} timed out after {:?}, force closing",
+                                          label_for_timeout, popup_start.elapsed());
+
+                                    if !popup_closed_timeout.swap(true, Ordering::SeqCst) {
+                                        if let Some(win) = app_for_timeout.get_webview_window(&label_for_timeout) {
+                                            match win.close() {
+                                                Ok(_) => info!("Orphaned auth popup closed"),
+                                                Err(e) => warn!("Failed to close orphaned popup: {}", e),
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        });
+
+                        NewWindowResponse::Create { window }
+                    },
                     Err(e) => {
-                        debug!("Failed to create popup: {}", e);
+                        warn!("Failed to create auth popup: {}", e);
                         NewWindowResponse::Deny
                     }
                 }
