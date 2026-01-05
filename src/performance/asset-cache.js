@@ -89,6 +89,135 @@ export class AssetCache {
       misses: 0,
       evictions: 0,
       bypassed: 0,
+      prewarmed: 0,
+      prewarmFailed: 0,
+    };
+
+    // Prewarm state
+    this.isPrewarming = false;
+    this.prewarmProgress = { total: 0, completed: 0, failed: 0 };
+  }
+
+  /**
+   * Prewarm the cache with a list of asset URLs
+   * Fetches assets in the background using requestIdleCallback for non-blocking operation
+   * @param {string[]} urls - Array of asset URLs to prewarm
+   * @param {Object} options - Prewarm options
+   * @param {number} options.concurrency - Max concurrent fetches (default: 3)
+   * @param {Function} options.onProgress - Progress callback
+   * @returns {Promise<{success: number, failed: number, skipped: number}>}
+   */
+  async prewarm(urls, options = {}) {
+    if (!this.isInitialized) {
+      console.warn('[AssetCache] Cannot prewarm: cache not initialized');
+      return { success: 0, failed: 0, skipped: 0 };
+    }
+
+    if (this.isPrewarming) {
+      console.warn('[AssetCache] Prewarm already in progress');
+      return { success: 0, failed: 0, skipped: 0 };
+    }
+
+    const { concurrency = 3, onProgress } = options;
+    this.isPrewarming = true;
+
+    // Filter to only cacheable URLs not already cached
+    const urlsToFetch = urls.filter(url => {
+      if (!this.shouldCache(url)) return false;
+      if (this.cache.has(url)) return false;
+      return true;
+    });
+
+    const skipped = urls.length - urlsToFetch.length;
+    this.prewarmProgress = { total: urlsToFetch.length, completed: 0, failed: 0 };
+
+    console.log(`[AssetCache] Prewarming ${urlsToFetch.length} assets (${skipped} skipped)`);
+    const startTime = performance.now();
+
+    let success = 0;
+    let failed = 0;
+
+    // Process in batches for controlled concurrency
+    for (let i = 0; i < urlsToFetch.length; i += concurrency) {
+      const batch = urlsToFetch.slice(i, i + concurrency);
+
+      // Use requestIdleCallback if available for non-blocking operation
+      await new Promise(resolve => {
+        const processBatch = async () => {
+          const results = await Promise.allSettled(
+            batch.map(url => this._prewarmUrl(url))
+          );
+
+          results.forEach((result, idx) => {
+            if (result.status === 'fulfilled' && result.value) {
+              success++;
+              this.stats.prewarmed++;
+            } else {
+              failed++;
+              this.stats.prewarmFailed++;
+            }
+            this.prewarmProgress.completed++;
+            if (result.status === 'rejected') {
+              this.prewarmProgress.failed++;
+            }
+          });
+
+          if (onProgress) {
+            onProgress({
+              ...this.prewarmProgress,
+              percent: Math.round((this.prewarmProgress.completed / this.prewarmProgress.total) * 100),
+            });
+          }
+
+          resolve();
+        };
+
+        if (typeof requestIdleCallback !== 'undefined') {
+          requestIdleCallback(processBatch, { timeout: 1000 });
+        } else {
+          setTimeout(processBatch, 0);
+        }
+      });
+    }
+
+    const duration = Math.round(performance.now() - startTime);
+    this.isPrewarming = false;
+
+    console.log(`[AssetCache] Prewarm complete: ${success} success, ${failed} failed, ${skipped} skipped (${duration}ms)`);
+
+    return { success, failed, skipped };
+  }
+
+  /**
+   * Prewarm a single URL
+   * @param {string} url
+   * @returns {Promise<boolean>}
+   */
+  async _prewarmUrl(url) {
+    try {
+      // Use originalFetch to bypass cache check (we know it's not cached)
+      const response = await this.originalFetch(url);
+
+      if (response.ok) {
+        await this.set(url, response.clone());
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.warn(`[AssetCache] Prewarm failed for: ${url}`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Get prewarm progress
+   * @returns {{total: number, completed: number, failed: number, isPrewarming: boolean}}
+   */
+  getPrewarmProgress() {
+    return {
+      ...this.prewarmProgress,
+      isPrewarming: this.isPrewarming,
     };
   }
 
@@ -356,6 +485,9 @@ export class AssetCache {
       hits: this.stats.hits,
       bypassed: this.stats.bypassed,
       evictions: this.stats.evictions,
+      prewarmed: this.stats.prewarmed,
+      prewarmFailed: this.stats.prewarmFailed,
+      isPrewarming: this.isPrewarming,
     };
   }
 
@@ -367,7 +499,15 @@ export class AssetCache {
     this.head = null;
     this.tail = null;
     this.currentSizeBytes = 0;
-    this.stats = { hits: 0, misses: 0, evictions: 0, bypassed: 0 };
+    this.stats = {
+      hits: 0,
+      misses: 0,
+      evictions: 0,
+      bypassed: 0,
+      prewarmed: 0,
+      prewarmFailed: 0,
+    };
+    this.prewarmProgress = { total: 0, completed: 0, failed: 0 };
     console.log('[AssetCache] Cache cleared');
   }
 
@@ -387,3 +527,90 @@ export class AssetCache {
 
 // Singleton instance
 export const assetCache = new AssetCache();
+
+/**
+ * Critical assets to prewarm for Pokemon Auto Chess
+ * These are commonly used assets that benefit from early caching
+ * Note: Paths are relative to the game's base URL
+ */
+export const CRITICAL_ASSETS = [
+  // UI Assets
+  '/assets/ui/button.png',
+  '/assets/ui/panel.png',
+  '/assets/ui/icons.png',
+
+  // Common Pokemon sprites (most frequently seen)
+  '/assets/pokemons/0001.png', // Bulbasaur
+  '/assets/pokemons/0004.png', // Charmander
+  '/assets/pokemons/0007.png', // Squirtle
+  '/assets/pokemons/0025.png', // Pikachu
+
+  // Battle UI
+  '/assets/ui/health-bar.png',
+  '/assets/ui/mana-bar.png',
+  '/assets/ui/status-icons.png',
+
+  // Audio (most common sounds)
+  '/assets/sounds/click.mp3',
+  '/assets/sounds/battle-start.mp3',
+
+  // Tilesets
+  '/assets/tilesets/grass.png',
+  '/assets/tilesets/water.png',
+
+  // Config files
+  '/assets/data/pokemon.json',
+  '/assets/data/items.json',
+  '/assets/data/abilities.json',
+];
+
+/**
+ * Discover asset URLs from the current page
+ * Scans DOM for images, audio, and other cacheable resources
+ * @returns {string[]}
+ */
+export function discoverPageAssets() {
+  const assets = new Set();
+
+  // Find all images
+  document.querySelectorAll('img[src]').forEach(img => {
+    const src = img.src;
+    if (src && !src.startsWith('data:')) {
+      assets.add(src);
+    }
+  });
+
+  // Find images in CSS backgrounds (limited detection)
+  document.querySelectorAll('[style*="background"]').forEach(el => {
+    const style = el.getAttribute('style') || '';
+    const match = style.match(/url\(['"]?([^'"()]+)['"]?\)/);
+    if (match && match[1] && !match[1].startsWith('data:')) {
+      assets.add(match[1]);
+    }
+  });
+
+  // Find audio elements
+  document.querySelectorAll('audio[src], source[src]').forEach(audio => {
+    const src = audio.src || audio.getAttribute('src');
+    if (src) {
+      assets.add(src);
+    }
+  });
+
+  return Array.from(assets);
+}
+
+/**
+ * Start prewarming with critical assets plus discovered page assets
+ * Call this after the page has loaded and user is in lobby/menu
+ * @param {Object} options - Options to pass to prewarm()
+ * @returns {Promise<{success: number, failed: number, skipped: number}>}
+ */
+export async function startPrewarm(options = {}) {
+  // Combine critical assets with discovered page assets
+  const discoveredAssets = discoverPageAssets();
+  const allAssets = [...new Set([...CRITICAL_ASSETS, ...discoveredAssets])];
+
+  console.log(`[AssetCache] Starting prewarm with ${allAssets.length} assets`);
+  return assetCache.prewarm(allAssets, options);
+}
