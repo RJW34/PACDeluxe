@@ -38,6 +38,34 @@ export class FrameMonitor {
       totalFrames: 0,
       jitter: 0,
     };
+
+    // Histogram buckets for frame time distribution
+    // Bucket thresholds in milliseconds
+    this.histogramBuckets = {
+      excellent: 0,  // 0-8ms (<120fps equivalent)
+      good: 0,       // 8-16ms (60-120fps)
+      acceptable: 0, // 16-33ms (30-60fps)
+      poor: 0,       // 33ms+ (<30fps)
+    };
+
+    // Bucket thresholds
+    this.bucketThresholds = {
+      excellent: 8,
+      good: 16,
+      acceptable: 33,
+    };
+  }
+
+  /**
+   * Classify frame time into histogram bucket
+   * @param {number} frameTime - Frame time in milliseconds
+   * @returns {string} Bucket name
+   */
+  classifyFrameTime(frameTime) {
+    if (frameTime <= this.bucketThresholds.excellent) return 'excellent';
+    if (frameTime <= this.bucketThresholds.good) return 'good';
+    if (frameTime <= this.bucketThresholds.acceptable) return 'acceptable';
+    return 'poor';
   }
 
   /**
@@ -105,6 +133,10 @@ export class FrameMonitor {
       this.frameTimes.shift();
     }
 
+    // Update histogram bucket
+    const bucket = this.classifyFrameTime(elapsed);
+    this.histogramBuckets[bucket]++;
+
     // Calculate jitter (standard deviation of frame times)
     if (this.frameTimes.length > 1) {
       const avg =
@@ -141,6 +173,50 @@ export class FrameMonitor {
       currentFps: avgFrameTime > 0 ? 1000 / avgFrameTime : 0,
       avgFrameTime,
       frameCount: this.frameCount,
+      histogram: this.getHistogram(),
+    };
+  }
+
+  /**
+   * Get histogram data with percentages
+   * @returns {Object} Histogram data with counts and percentages
+   */
+  getHistogram() {
+    const total = Object.values(this.histogramBuckets).reduce((a, b) => a + b, 0);
+
+    return {
+      buckets: { ...this.histogramBuckets },
+      percentages: {
+        excellent: total > 0 ? (this.histogramBuckets.excellent / total) * 100 : 0,
+        good: total > 0 ? (this.histogramBuckets.good / total) * 100 : 0,
+        acceptable: total > 0 ? (this.histogramBuckets.acceptable / total) * 100 : 0,
+        poor: total > 0 ? (this.histogramBuckets.poor / total) * 100 : 0,
+      },
+      total,
+      // Calculate percentiles from raw frame times
+      percentiles: this.calculatePercentiles(),
+    };
+  }
+
+  /**
+   * Calculate frame time percentiles (p50, p95, p99)
+   * @returns {Object} Percentile values in milliseconds
+   */
+  calculatePercentiles() {
+    if (this.frameTimes.length === 0) {
+      return { p50: 0, p95: 0, p99: 0 };
+    }
+
+    const sorted = [...this.frameTimes].sort((a, b) => a - b);
+    const getPercentile = (p) => {
+      const index = Math.ceil((p / 100) * sorted.length) - 1;
+      return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+    };
+
+    return {
+      p50: Math.round(getPercentile(50) * 10) / 10,
+      p95: Math.round(getPercentile(95) * 10) / 10,
+      p99: Math.round(getPercentile(99) * 10) / 10,
     };
   }
 
@@ -155,6 +231,14 @@ export class FrameMonitor {
     };
     this.frameTimes = [];
     this.frameCount = 0;
+
+    // Reset histogram buckets
+    this.histogramBuckets = {
+      excellent: 0,
+      good: 0,
+      acceptable: 0,
+      poor: 0,
+    };
   }
 }
 
