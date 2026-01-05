@@ -10,6 +10,8 @@ use sysinfo::System;
 use tauri::WebviewWindow;
 use tracing::{debug, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use wmi::{COMLibrary, WMIConnection};
 
 /// Performance statistics from native code
 /// Note: FPS is measured in JavaScript (frame-monitor.js), not here
@@ -59,6 +61,19 @@ impl Default for PerformanceMonitor {
 
 /// Flag to track if WebView2 optimization thread is running
 static WEBVIEW_OPTIMIZER_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Flag to track if WMI watcher is active (vs polling fallback)
+static WMI_WATCHER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// WMI event structure for process start trace
+/// Maps to Win32_ProcessStartTrace WMI class
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct ProcessStartTrace {
+    process_id: u32,
+    process_name: String,
+    parent_process_id: u32,
+}
 
 /// Enable per-monitor DPI awareness for crisp rendering on high-DPI displays
 fn enable_dpi_awareness() {
@@ -159,13 +174,222 @@ fn disable_power_throttling() {
     }
 }
 
-/// Start a background thread that periodically elevates WebView2 child process priority
+/// Start WebView2 optimizer - tries WMI event-driven approach first, falls back to polling
 fn start_webview_optimizer() {
     // Only start once
     if WEBVIEW_OPTIMIZER_RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
 
+    // Try WMI event-driven approach first
+    if start_wmi_process_watcher() {
+        info!("WebView2 optimizer using WMI event-driven monitoring");
+        return;
+    }
+
+    // Fall back to polling
+    warn!("WMI unavailable, falling back to polling-based WebView2 monitoring");
+    start_polling_optimizer();
+}
+
+/// Start WMI-based process event watcher
+/// Returns true if WMI watcher started successfully, false if unavailable
+fn start_wmi_process_watcher() -> bool {
+    let our_pid = std::process::id();
+    let optimized_pids = Arc::new(Mutex::new(std::collections::HashSet::<u32>::new()));
+    let optimized_pids_clone = optimized_pids.clone();
+
+    // Try to initialize WMI in a separate thread
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        // Initialize COM library (required for WMI)
+        let com = match COMLibrary::new() {
+            Ok(c) => c,
+            Err(e) => {
+                debug!("Failed to initialize COM library: {:?}", e);
+                let _ = tx.send(false);
+                return;
+            }
+        };
+
+        // Connect to WMI root\cimv2 namespace
+        let wmi_con = match WMIConnection::new(com) {
+            Ok(w) => w,
+            Err(e) => {
+                debug!("Failed to connect to WMI: {:?}", e);
+                let _ = tx.send(false);
+                return;
+            }
+        };
+
+        // Subscribe to process start trace events using WMI notification API
+        // Win32_ProcessStartTrace requires elevated privileges on some systems
+        // The wmi crate's notification() method subscribes to __InstanceCreationEvent
+        let iter_result = wmi_con.notification::<ProcessStartTrace>();
+
+        let mut iter = match iter_result {
+            Ok(i) => i,
+            Err(e) => {
+                debug!("WMI notification subscription failed: {:?}", e);
+                let _ = tx.send(false);
+                return;
+            }
+        };
+
+        // Signal success
+        WMI_WATCHER_ACTIVE.store(true, Ordering::SeqCst);
+        let _ = tx.send(true);
+
+        info!("WMI process event subscription active");
+        debug!("Watching for WebView2 process creation events (parent PID: {})", our_pid);
+
+        // Process events as they arrive
+        loop {
+            match iter.next() {
+                Some(Ok(event)) => {
+                    let process_name_lower = event.process_name.to_lowercase();
+                    if process_name_lower.contains("msedgewebview2") {
+                        debug!(
+                            "WMI: WebView2 process started - PID: {}, Parent: {}, Name: {}",
+                            event.process_id, event.parent_process_id, event.process_name
+                        );
+
+                        // Check if it's a child or descendant of our process
+                        let is_our_child = event.parent_process_id == our_pid
+                            || is_descendant_of_pid(event.process_id, our_pid);
+
+                        if is_our_child {
+                            let mut pids = optimized_pids_clone.lock().unwrap_or_else(|e| e.into_inner());
+                            if !pids.contains(&event.process_id) {
+                                if elevate_single_process(event.process_id) {
+                                    pids.insert(event.process_id);
+                                    info!(
+                                        "WMI: Elevated WebView2 process {} within ~0ms of spawn",
+                                        event.process_id
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    debug!("WMI event error: {:?}", e);
+                }
+                None => {
+                    warn!("WMI notification iterator ended unexpectedly");
+                    break;
+                }
+            }
+        }
+
+        // If we exit the loop, WMI is no longer active
+        WMI_WATCHER_ACTIVE.store(false, Ordering::SeqCst);
+        warn!("WMI watcher terminated, consider restarting application");
+    });
+
+    // Wait for initialization result (with timeout)
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(success) => success,
+        Err(_) => {
+            debug!("WMI initialization timed out");
+            false
+        }
+    }
+}
+
+/// Elevate a single process by PID
+/// Returns true if elevation succeeded
+fn elevate_single_process(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, SetPriorityClass, SetProcessPriorityBoost,
+        ABOVE_NORMAL_PRIORITY_CLASS, PROCESS_SET_INFORMATION,
+    };
+
+    unsafe {
+        if let Ok(handle) = OpenProcess(PROCESS_SET_INFORMATION, false, pid) {
+            let mut success = false;
+
+            if SetPriorityClass(handle, ABOVE_NORMAL_PRIORITY_CLASS).is_ok() {
+                debug!("Elevated process {} to above-normal priority", pid);
+                success = true;
+            }
+
+            // Disable priority boost for consistent timing
+            if let Err(e) = SetProcessPriorityBoost(handle, true) {
+                debug!("Failed to disable priority boost for process {}: {:?}", pid, e);
+            }
+
+            if let Err(e) = CloseHandle(handle) {
+                debug!("Failed to close handle for process {}: {:?}", pid, e);
+            }
+
+            success
+        } else {
+            debug!("Failed to open process {} for priority adjustment", pid);
+            false
+        }
+    }
+}
+
+/// Check if a process is a descendant of another by PID only (no snapshot handle)
+fn is_descendant_of_pid(pid: u32, ancestor_pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    };
+
+    let mut visited = std::collections::HashSet::new();
+    let mut current_pid = pid;
+
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return false;
+        };
+
+        let result = loop {
+            if visited.contains(&current_pid) || current_pid == 0 {
+                break false;
+            }
+            visited.insert(current_pid);
+
+            let mut entry = PROCESSENTRY32 {
+                dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
+                ..Default::default()
+            };
+
+            if Process32First(snapshot, &mut entry).is_err() {
+                break false;
+            }
+
+            let mut found_parent = None;
+            loop {
+                if entry.th32ProcessID == current_pid {
+                    found_parent = Some(entry.th32ParentProcessID);
+                    break;
+                }
+                if Process32Next(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+
+            match found_parent {
+                Some(parent) if parent == ancestor_pid => break true,
+                Some(parent) => current_pid = parent,
+                None => break false,
+            }
+        };
+
+        if let Err(e) = CloseHandle(snapshot) {
+            debug!("Failed to close snapshot handle: {:?}", e);
+        }
+        result
+    }
+}
+
+/// Start polling-based WebView2 optimizer (fallback when WMI unavailable)
+fn start_polling_optimizer() {
     std::thread::spawn(|| {
         // Wait for WebView2 to spawn
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -184,7 +408,7 @@ fn start_webview_optimizer() {
         }
     });
 
-    debug!("Started WebView2 optimizer thread");
+    debug!("Started polling-based WebView2 optimizer thread");
 }
 
 /// Find and elevate WebView2 child processes
