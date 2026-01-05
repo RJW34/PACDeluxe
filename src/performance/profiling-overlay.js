@@ -62,6 +62,17 @@ export class ProfilingOverlay {
 
     /** @type {Object} - RTT percentiles */
     this.rttPercentiles = { p50: 0, p95: 0, p99: 0 };
+
+    /** @type {'line' | 'histogram'} - Current graph view mode */
+    this.graphMode = 'line';
+  }
+
+  /**
+   * Toggle between line chart and histogram view
+   */
+  toggleGraphMode() {
+    this.graphMode = this.graphMode === 'line' ? 'histogram' : 'line';
+    console.log(`[ProfilingOverlay] Graph mode: ${this.graphMode}`);
   }
 
   /**
@@ -302,8 +313,16 @@ export class ProfilingOverlay {
           <span class="pac-label">RTT</span>
           <span class="pac-value">-- ms</span>
         </div>
+        <div class="pac-graph-header">
+          <span class="pac-graph-label" id="pac-graph-label">FPS History</span>
+          <button class="pac-graph-toggle" onclick="window.__PAC_OVERLAY__.toggleGraphMode()">⇄</button>
+        </div>
         <div class="pac-graph-container" id="pac-graph">
-          <canvas id="pac-fps-graph" width="200" height="40"></canvas>
+          <canvas id="pac-fps-graph" width="200" height="50"></canvas>
+        </div>
+        <div class="pac-metric" id="pac-percentiles">
+          <span class="pac-label">p50/p95/p99</span>
+          <span class="pac-value">--/--/--</span>
         </div>
         <div class="pac-metric" id="pac-dropped">
           <span class="pac-label">Dropped</span>
@@ -392,6 +411,33 @@ export class ProfilingOverlay {
       .pac-value.good { color: #00ff00; }
       .pac-value.warning { color: #ffff00; }
       .pac-value.bad { color: #ff4444; }
+
+      .pac-graph-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 6px;
+        margin-bottom: 2px;
+      }
+
+      .pac-graph-label {
+        color: #888;
+        font-size: 10px;
+      }
+
+      .pac-graph-toggle {
+        background: rgba(0, 255, 0, 0.2);
+        border: 1px solid rgba(0, 255, 0, 0.3);
+        border-radius: 3px;
+        color: #00ff00;
+        cursor: pointer;
+        font-size: 10px;
+        padding: 1px 6px;
+      }
+
+      .pac-graph-toggle:hover {
+        background: rgba(0, 255, 0, 0.3);
+      }
 
       .pac-graph-container {
         margin: 8px 0;
@@ -513,11 +559,23 @@ export class ProfilingOverlay {
     await this.measureRtt();
     this.updateMetric('pac-network', this.getRttDisplayString(), this.getRttClass(this.networkRtt));
 
+    // Update frame time percentiles
+    if (frameMetrics.histogram) {
+      const p = frameMetrics.histogram.percentiles;
+      this.updateMetric('pac-percentiles', `${p.p50}/${p.p95}/${p.p99} ms`);
+    }
+
     // Update dropped frames
     this.updateMetric('pac-dropped', `${frameMetrics.droppedFrames}`);
 
-    // Update graph
-    this.drawFpsGraph();
+    // Update graph label based on mode
+    const graphLabel = this.container.querySelector('#pac-graph-label');
+    if (graphLabel) {
+      graphLabel.textContent = this.graphMode === 'line' ? 'FPS History' : 'Frame Distribution';
+    }
+
+    // Update graph (line or histogram based on mode)
+    this.drawGraph(frameMetrics);
   }
 
   /**
@@ -535,9 +593,10 @@ export class ProfilingOverlay {
   }
 
   /**
-   * Draw the FPS graph
+   * Draw the graph (line chart or histogram based on mode)
+   * @param {Object} frameMetrics - Frame metrics from FrameMonitor
    */
-  drawFpsGraph() {
+  drawGraph(frameMetrics) {
     const canvas = this.container.querySelector('#pac-fps-graph');
     if (!canvas) return;
 
@@ -549,6 +608,17 @@ export class ProfilingOverlay {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.fillRect(0, 0, width, height);
 
+    if (this.graphMode === 'histogram') {
+      this.drawHistogram(ctx, width, height, frameMetrics.histogram);
+    } else {
+      this.drawLineChart(ctx, width, height);
+    }
+  }
+
+  /**
+   * Draw line chart (FPS history)
+   */
+  drawLineChart(ctx, width, height) {
     if (this.fpsHistory.length < 2) return;
 
     // Draw FPS line
@@ -581,6 +651,77 @@ export class ProfilingOverlay {
     ctx.lineTo(width, y60);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  /**
+   * Draw histogram (frame time distribution)
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} width
+   * @param {number} height
+   * @param {Object} histogram - Histogram data from FrameMonitor
+   */
+  drawHistogram(ctx, width, height, histogram) {
+    if (!histogram || histogram.total === 0) {
+      // Draw "no data" message
+      ctx.fillStyle = '#666';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('Collecting data...', width / 2, height / 2 + 3);
+      return;
+    }
+
+    const buckets = ['excellent', 'good', 'acceptable', 'poor'];
+    const colors = {
+      excellent: '#00ff00', // Green - excellent (<8ms)
+      good: '#88ff00',      // Yellow-green - good (8-16ms)
+      acceptable: '#ffff00', // Yellow - acceptable (16-33ms)
+      poor: '#ff4444',      // Red - poor (>33ms)
+    };
+    const labels = {
+      excellent: '<8ms',
+      good: '8-16',
+      acceptable: '16-33',
+      poor: '>33ms',
+    };
+
+    const barWidth = (width - 20) / buckets.length;
+    const maxPercent = Math.max(...Object.values(histogram.percentages), 1);
+    const labelHeight = 12;
+    const graphHeight = height - labelHeight;
+
+    buckets.forEach((bucket, i) => {
+      const percent = histogram.percentages[bucket];
+      const barHeight = (percent / maxPercent) * (graphHeight - 4);
+      const x = 10 + i * barWidth;
+      const y = graphHeight - barHeight;
+
+      // Draw bar
+      ctx.fillStyle = colors[bucket];
+      ctx.fillRect(x + 2, y, barWidth - 4, barHeight);
+
+      // Draw percentage on bar if tall enough
+      if (barHeight > 12 && percent > 0) {
+        ctx.fillStyle = '#000';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${Math.round(percent)}%`, x + barWidth / 2, y + 10);
+      }
+
+      // Draw label below
+      ctx.fillStyle = '#888';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(labels[bucket], x + barWidth / 2, height - 2);
+    });
+  }
+
+  /**
+   * Draw the FPS graph (legacy - redirects to drawGraph)
+   * @deprecated Use drawGraph instead
+   */
+  drawFpsGraph() {
+    const frameMetrics = frameMonitor.getMetrics();
+    this.drawGraph(frameMetrics);
   }
 
   /**
