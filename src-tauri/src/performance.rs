@@ -243,8 +243,12 @@ fn elevate_webview2_processes(already_optimized: &std::collections::HashSet<u32>
                             new_pids.push(pid);
                         }
                         // Also disable priority boost for consistent timing
-                        let _ = SetProcessPriorityBoost(handle, true);
-                        let _ = CloseHandle(handle);
+                        if let Err(e) = SetProcessPriorityBoost(handle, true) {
+                            debug!("Failed to set priority boost for WebView2 process {}: {:?}", pid, e);
+                        }
+                        if let Err(e) = CloseHandle(handle) {
+                            debug!("Failed to close handle for WebView2 process {}: {:?}", pid, e);
+                        }
                     }
                 }
 
@@ -254,7 +258,9 @@ fn elevate_webview2_processes(already_optimized: &std::collections::HashSet<u32>
             }
         }
 
-        let _ = CloseHandle(snapshot);
+        if let Err(e) = CloseHandle(snapshot) {
+            debug!("Failed to close process snapshot handle: {:?}", e);
+        }
     }
 
     if new_pids.is_empty() {
@@ -315,7 +321,9 @@ fn is_descendant_of(_snapshot: windows::Win32::Foundation::HANDLE, pid: u32, anc
             }
         };
 
-        let _ = CloseHandle(local_snapshot);
+        if let Err(e) = CloseHandle(local_snapshot) {
+            debug!("Failed to close descendant check snapshot handle: {:?}", e);
+        }
         result
     }
 }
@@ -367,24 +375,29 @@ pub fn optimize_window(window: &WebviewWindow) {
             // DWMWA_SYSTEMBACKDROP_TYPE = 38 (disable backdrop effects)
 
             // Disable rounded corners (Windows 11) for slightly faster rendering
+            // Note: These are Windows 11+ features, expected to fail on older Windows
             const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
             const DWMWCP_DONOTROUND: i32 = 1;
-            let _ = DwmSetWindowAttribute(
+            if let Err(e) = DwmSetWindowAttribute(
                 hwnd,
                 windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(DWMWA_WINDOW_CORNER_PREFERENCE as i32),
                 &DWMWCP_DONOTROUND as *const i32 as *const std::ffi::c_void,
                 std::mem::size_of::<i32>() as u32,
-            );
+            ) {
+                debug!("Could not disable rounded corners (Windows 11+ only): {:?}", e);
+            }
 
             // Disable system backdrop/mica effects (Windows 11)
             const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
             const DWMSBT_NONE: i32 = 1;
-            let _ = DwmSetWindowAttribute(
+            if let Err(e) = DwmSetWindowAttribute(
                 hwnd,
                 windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(DWMWA_SYSTEMBACKDROP_TYPE as i32),
                 &DWMSBT_NONE as *const i32 as *const std::ffi::c_void,
                 std::mem::size_of::<i32>() as u32,
-            );
+            ) {
+                debug!("Could not disable mica/backdrop effects (Windows 11+ only): {:?}", e);
+            }
         }
     }
 

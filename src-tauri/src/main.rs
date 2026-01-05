@@ -23,6 +23,13 @@ const OVERLAY_SCRIPT: &str = r#"
             return;
         }
 
+        // === SCROLLBAR FIX ===
+        // Fix 100vw overflow causing unwanted scrollbar on pack/booster screen
+        const scrollbarFix = document.createElement('style');
+        scrollbarFix.textContent = 'html { overflow: hidden !important; }';
+        document.head.appendChild(scrollbarFix);
+        console.log('[PACDeluxe] Scrollbar fix applied');
+
         // Create overlay element
         const overlay = document.createElement('div');
         overlay.id = 'pac-perf';
@@ -183,7 +190,11 @@ fn main() {
             .focused(true)
             .visible(true)
             .on_page_load(|webview, _payload| {
-                let _ = webview.eval(OVERLAY_SCRIPT);
+                if let Err(e) = webview.eval(OVERLAY_SCRIPT) {
+                    tracing::warn!("Failed to inject overlay script: {}", e);
+                } else {
+                    tracing::debug!("Overlay script injected successfully");
+                }
             })
             // Handle OAuth popup windows (Google/Firebase auth)
             .on_new_window(move |url, features| {
