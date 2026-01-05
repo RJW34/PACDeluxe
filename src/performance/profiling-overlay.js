@@ -48,14 +48,67 @@ export class ProfilingOverlay {
     /** @type {number|null} */
     this.updateInterval = null;
 
-    // Network metrics
+    // Network metrics with enhanced tracking
     this.lastNetworkCheck = 0;
     this.networkRtt = 0;
-    this.rttCheckInterval = 5000; // Check RTT every 5 seconds
+    this.rttCheckInterval = 2000; // Check RTT every 2 seconds (more responsive)
+
+    /** @type {number[]} - RTT history for percentile/jitter calculation */
+    this.rttHistory = [];
+    this.maxRttHistory = 20; // Keep last 20 samples
+
+    /** @type {number} - Calculated jitter (standard deviation of RTT) */
+    this.rttJitter = 0;
+
+    /** @type {Object} - RTT percentiles */
+    this.rttPercentiles = { p50: 0, p95: 0, p99: 0 };
   }
 
   /**
-   * Measure RTT to game server using Performance API
+   * Calculate standard deviation (jitter) from array of values
+   * @param {number[]} values
+   * @returns {number}
+   */
+  calculateStdDev(values) {
+    if (values.length < 2) return 0;
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const squaredDiffs = values.map(v => Math.pow(v - mean, 2));
+    const avgSquaredDiff = squaredDiffs.reduce((a, b) => a + b, 0) / values.length;
+    return Math.sqrt(avgSquaredDiff);
+  }
+
+  /**
+   * Calculate percentile from sorted array
+   * @param {number[]} sorted - Sorted array of values
+   * @param {number} p - Percentile (0-100)
+   * @returns {number}
+   */
+  calculatePercentile(sorted, p) {
+    if (sorted.length === 0) return 0;
+    const index = Math.ceil((p / 100) * sorted.length) - 1;
+    return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+  }
+
+  /**
+   * Update RTT statistics from history
+   */
+  updateRttStats() {
+    if (this.rttHistory.length === 0) return;
+
+    // Calculate jitter (standard deviation)
+    this.rttJitter = Math.round(this.calculateStdDev(this.rttHistory));
+
+    // Calculate percentiles
+    const sorted = [...this.rttHistory].sort((a, b) => a - b);
+    this.rttPercentiles = {
+      p50: Math.round(this.calculatePercentile(sorted, 50)),
+      p95: Math.round(this.calculatePercentile(sorted, 95)),
+      p99: Math.round(this.calculatePercentile(sorted, 99)),
+    };
+  }
+
+  /**
+   * Measure RTT to game server using multiple detection methods
    * @returns {Promise<number>} RTT in milliseconds
    */
   async measureRtt() {
@@ -67,77 +120,138 @@ export class ProfilingOverlay {
     }
 
     this.lastNetworkCheck = now;
+    let measuredRtt = 0;
 
     try {
       // Method 1: Check Colyseus room ping if available (most accurate)
+      // Try multiple paths where the room object might be exposed
       if (typeof window !== 'undefined') {
-        // Try to access Colyseus room's latency from global app state
-        const room = window.room || window.__COLYSEUS_ROOM__ ||
-          (window.app && window.app.room);
-        if (room && typeof room.ping === 'number' && room.ping > 0) {
-          this.networkRtt = room.ping;
-          return this.networkRtt;
+        const roomPaths = [
+          // Direct room object
+          () => window.room,
+          () => window.__COLYSEUS_ROOM__,
+          // Via app object (common pattern)
+          () => window.app?.room,
+          () => window.app?.game?.room,
+          // Via game object
+          () => window.game?.room,
+          () => window.game?.network?.room,
+          // Via CC (Pokemon Auto Chess specific)
+          () => window.CC?.room,
+          () => window.CC?.game?.room,
+          // Via store/state
+          () => window.store?.getState?.()?.network?.room,
+          () => window.__STORE__?.getState?.()?.room,
+          // Via Colyseus client
+          () => window.client?.rooms?.values?.().next?.()?.value,
+          () => window.colyseus?.rooms?.[0],
+        ];
+
+        for (const getRoom of roomPaths) {
+          try {
+            const room = getRoom();
+            if (room) {
+              // Try different ping property names
+              const ping = room.ping ?? room.latency ?? room.rtt ?? room._ping;
+              if (typeof ping === 'number' && ping > 0 && ping < 5000) {
+                measuredRtt = Math.round(ping);
+                break;
+              }
+            }
+          } catch {
+            // Path doesn't exist, try next
+          }
         }
       }
 
       // Method 2: Use Navigation Timing API for WebSocket connections
-      const entries = performance.getEntriesByType('resource');
-      const wsEntries = entries.filter(e =>
-        e.name.includes('colyseus') ||
-        e.name.includes('socket') ||
-        e.initiatorType === 'websocket' ||
-        e.name.includes('ws:') ||
-        e.name.includes('wss:')
-      ).slice(-10);
+      if (measuredRtt === 0) {
+        const entries = performance.getEntriesByType('resource');
+        const wsEntries = entries.filter(e =>
+          e.name.includes('colyseus') ||
+          e.name.includes('socket') ||
+          e.name.includes('pokemon-auto-chess') ||
+          e.initiatorType === 'websocket' ||
+          e.name.includes('ws:') ||
+          e.name.includes('wss:')
+        ).slice(-10);
 
-      if (wsEntries.length > 0) {
-        // Use connect timing for WebSocket entries
-        const rtts = wsEntries
-          .map(e => {
-            // For WebSockets, connectEnd - connectStart is connection time
-            if (e.connectEnd && e.connectStart) {
-              return e.connectEnd - e.connectStart;
-            }
-            // Fallback to response time
-            return e.responseEnd - e.requestStart;
-          })
-          .filter(rtt => rtt > 0 && rtt < 5000);
+        if (wsEntries.length > 0) {
+          const rtts = wsEntries
+            .map(e => {
+              // For WebSockets, connectEnd - connectStart is connection time
+              if (e.connectEnd && e.connectStart && e.connectEnd > e.connectStart) {
+                return e.connectEnd - e.connectStart;
+              }
+              // Fallback to response time
+              if (e.responseEnd && e.requestStart) {
+                return e.responseEnd - e.requestStart;
+              }
+              return 0;
+            })
+            .filter(rtt => rtt > 0 && rtt < 5000);
 
-        if (rtts.length > 0) {
-          // Use median instead of average for more stable values
-          rtts.sort((a, b) => a - b);
-          this.networkRtt = Math.round(rtts[Math.floor(rtts.length / 2)]);
-          return this.networkRtt;
+          if (rtts.length > 0) {
+            rtts.sort((a, b) => a - b);
+            measuredRtt = Math.round(rtts[Math.floor(rtts.length / 2)]);
+          }
         }
       }
 
-      // Method 3: Check for any recent XHR/fetch requests
-      const allEntries = entries.filter(e =>
-        e.initiatorType === 'fetch' ||
-        e.initiatorType === 'xmlhttprequest'
-      ).slice(-5);
+      // Method 3: Check for any recent XHR/fetch requests to game server
+      if (measuredRtt === 0) {
+        const entries = performance.getEntriesByType('resource');
+        const apiEntries = entries.filter(e =>
+          (e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest') &&
+          (e.name.includes('pokemon-auto-chess') || e.name.includes('colyseus'))
+        ).slice(-5);
 
-      if (allEntries.length > 0) {
-        const rtts = allEntries
-          .map(e => e.responseEnd - e.requestStart)
-          .filter(rtt => rtt > 0 && rtt < 5000);
+        if (apiEntries.length > 0) {
+          const rtts = apiEntries
+            .map(e => e.responseEnd - e.requestStart)
+            .filter(rtt => rtt > 0 && rtt < 5000);
 
-        if (rtts.length > 0) {
-          rtts.sort((a, b) => a - b);
-          this.networkRtt = Math.round(rtts[Math.floor(rtts.length / 2)]);
-          return this.networkRtt;
+          if (rtts.length > 0) {
+            rtts.sort((a, b) => a - b);
+            measuredRtt = Math.round(rtts[Math.floor(rtts.length / 2)]);
+          }
         }
       }
 
-      // If no data available, return 0 (unknown) rather than stale data
-      if (this.networkRtt === 0) {
-        return 0;
+      // Update RTT if we got a valid measurement
+      if (measuredRtt > 0) {
+        this.networkRtt = measuredRtt;
+
+        // Add to history for statistics
+        this.rttHistory.push(measuredRtt);
+        if (this.rttHistory.length > this.maxRttHistory) {
+          this.rttHistory.shift();
+        }
+
+        // Update statistics
+        this.updateRttStats();
       }
     } catch {
       // Keep previous RTT value on error
     }
 
     return this.networkRtt;
+  }
+
+  /**
+   * Get RTT display string with jitter
+   * @returns {string} Formatted RTT string like "45ms (±5ms)"
+   */
+  getRttDisplayString() {
+    if (this.networkRtt === 0) {
+      return '-- ms';
+    }
+
+    if (this.rttJitter > 0 && this.rttHistory.length >= 3) {
+      return `${this.networkRtt}ms (±${this.rttJitter})`;
+    }
+
+    return `${this.networkRtt} ms`;
   }
 
   /**
@@ -395,9 +509,9 @@ export class ProfilingOverlay {
       );
     }
 
-    // Update RTT
-    const rtt = await this.measureRtt();
-    this.updateMetric('pac-network', `${rtt} ms`, rtt < 50 ? 'good' : rtt < 100 ? 'warning' : 'bad');
+    // Update RTT with jitter display
+    await this.measureRtt();
+    this.updateMetric('pac-network', this.getRttDisplayString(), this.getRttClass(this.networkRtt));
 
     // Update dropped frames
     this.updateMetric('pac-dropped', `${frameMetrics.droppedFrames}`);
@@ -499,6 +613,18 @@ export class ProfilingOverlay {
   getCpuClass(cpu) {
     if (cpu <= 50) return 'good';
     if (cpu <= 80) return 'warning';
+    return 'bad';
+  }
+
+  /**
+   * Get CSS class for RTT value
+   * @param {number} rtt
+   * @returns {string}
+   */
+  getRttClass(rtt) {
+    if (rtt === 0) return ''; // Unknown
+    if (rtt < 50) return 'good';
+    if (rtt < 100) return 'warning';
     return 'bad';
   }
 
