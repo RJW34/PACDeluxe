@@ -1,236 +1,60 @@
 # PACDeluxe
 
-A native Windows 11 desktop client for [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) (8-player auto-battler) focused exclusively on performance optimization.
+A native Windows desktop client for [Pokemon Auto Chess](https://pokemon-auto-chess.com) with performance optimizations.
 
 ## Download
 
 **[Download Latest Release](https://github.com/RJW34/PACDeluxe/releases/latest)**
 
-Run the installer (`PACDeluxe_x.x.x_x64-setup.exe`) and follow the prompts.
-
-## Overview
-
-PACDeluxe is a native Tauri wrapper for the Pokemon Auto Chess browser game that provides:
-
-- **Smoother frame pacing** through native rendering optimizations
-- **Lower input latency** via high-priority event handling
-- **Reduced memory usage** through efficient caching
-- **Better CPU utilization** with native helper processes
-- **Consistent performance** by eliminating browser overhead
-
-## Non-Cheating Guarantee
-
-**This client does NOT provide any competitive advantage.**
-
-The following are explicitly forbidden and are not implemented:
-
-- Reading or modifying hidden game state
-- Accessing opponent information
-- Altering RNG or timing logic
-- Automating gameplay decisions
-- Modifying network traffic
-- Bypassing server validation
-
-All gameplay logic remains server-authoritative and unchanged.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Tauri Desktop Shell                     │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                  WebView (Frontend)                   │   │
-│  │  ┌───────────────────────────────────────────────┐   │   │
-│  │  │         Pokemon Auto Chess (Unchanged)         │   │   │
-│  │  │  ┌─────────────────────────────────────────┐  │   │   │
-│  │  │  │              Phaser 3 Game               │  │   │   │
-│  │  │  └─────────────────────────────────────────┘  │   │   │
-│  │  └───────────────────────────────────────────────┘   │   │
-│  │  ┌───────────────────────────────────────────────┐   │   │
-│  │  │         Performance Optimization Layer         │   │   │
-│  │  │  • Render Optimizer  • Frame Pacer            │   │   │
-│  │  │  • Input Optimizer   • Asset Cache            │   │   │
-│  │  │  • Profiling Overlay                          │   │   │
-│  │  └───────────────────────────────────────────────┘   │   │
-│  └─────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Native Performance Helper               │   │
-│  │  • Image decoding    • Asset preloading             │   │
-│  │  • System monitoring • Power management             │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
 ## Installation
 
-### Prerequisites
+1. Download `PACDeluxe_x.x.x_x64-setup.exe` from the link above
+2. Run the installer
+3. Launch PACDeluxe from your desktop or Start menu
 
-- Node.js 20+
-- Rust 1.70+
-- Platform-specific build tools:
-  - Windows: Visual Studio Build Tools
-  - macOS: Xcode Command Line Tools
-  - Linux: build-essential, libwebkit2gtk-4.1-dev
+## Features
 
-### Build Steps
+- **Better Performance** - Runs smoother than the browser version
+- **Lower Input Lag** - More responsive controls
+- **Desktop App** - No browser tabs, launches directly
+- **Performance Overlay** - Monitor FPS, CPU, and memory usage
 
-```bash
-# Clone the repository
-git clone https://github.com/RJW34/PACDeluxe
-cd PACDeluxe
+## How to Use
 
-# Install dependencies
-npm install
-
-# Sync upstream game
-npm run sync-upstream
-
-# Development mode
-npm run dev
-
-# Production build
-npm run build
-```
-
-## Usage
-
-### Development
-
-```bash
-# Build frontend and start Tauri dev mode
-npm run dev
-
-# Build frontend only
-npm run build:frontend
-
-# Run Tauri in development mode (requires built frontend)
-npm run tauri:dev
-```
-
-**Note:** Hot Module Replacement (HMR) is not supported due to how the game is embedded. Changes require a full frontend rebuild.
-
-### Production
-
-```bash
-# Build production release
-npm run build
-
-# Validate before release
-npm run validate
-
-# Run tests
-npm test
-```
+1. Launch PACDeluxe
+2. Log in with your Google account (same as the browser version)
+3. Play normally - everything works the same as the web version
 
 ### Keyboard Shortcuts
 
-- `Ctrl+Shift+P`: Toggle performance overlay
-- Standard game shortcuts remain unchanged
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Shift+P` | Toggle performance overlay |
+| `F11` | Toggle fullscreen |
 
-## Configuration
+## FAQ
 
-Configuration is stored in:
-- Windows: `%APPDATA%/PACDeluxe/config.json`
+**Is this cheating?**
+No. PACDeluxe only improves performance - it does not modify gameplay, read hidden information, or provide any competitive advantage. All game logic runs on the official servers.
 
-### Options
+**Will I get banned?**
+PACDeluxe does not violate any game rules. It's simply a different way to access the same game.
 
-```json
-{
-  "performance": {
-    "power_mode": "high_performance",
-    "disable_background_throttle": true,
-    "preload_assets": true,
-    "cache_size_mb": 512
-  },
-  "display": {
-    "width": 1920,
-    "height": 1080,
-    "fullscreen": false,
-    "borderless": false
-  },
-  "debug": {
-    "show_perf_overlay": false
-  }
-}
-```
+**Do I need a separate account?**
+No. Use your existing Google login.
 
-**Note:** VSync and target FPS are controlled by the browser's rendering pipeline and Phaser engine. The `power_mode` option accepts: `balanced`, `high_performance`, or `power_saver`.
+**Can I still play with browser users?**
+Yes. You connect to the same servers and play with everyone.
 
-## Performance Optimizations
+## Issues
 
-### Rendering
-- Phaser WebGL hardware acceleration
-- GPU compositing via native window layer
-- DWM transition animation bypass (Windows)
-- Compositor bypass hints (Linux)
+If something isn't working, [open an issue](https://github.com/RJW34/PACDeluxe/issues).
 
-### Input
-- High-priority event handling
-- Input-to-render latency tracking
-- MessageChannel for faster callbacks
+## Credits
 
-### Assets
-- IndexedDB-backed asset cache with LRU eviction
-- Service worker caching for offline access
-- Background asset preloading during load screens
-
-### System
-- Above-normal process priority (Windows/Linux)
-- High-resolution 1ms timer (Windows)
-- App Nap prevention (macOS)
-- QoS class optimization (macOS)
-- Disabled background throttling
-- Power mode management (Balanced/High Performance/Power Saver)
-
-## Validation
-
-Before any release, run the validation harness:
-
-```bash
-npm run validate
-```
-
-This checks:
-1. Ethical compliance (no cheating code)
-2. Determinism validation (identical game outcomes)
-3. Source code scanning for forbidden patterns
+- [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) by keldaanCommunity
+- Pokemon content is © Nintendo/Creatures Inc./GAME FREAK Inc.
 
 ## License
 
-BSD-3-Clause (matching upstream)
-
-## Contributing
-
-Contributions must:
-1. Pass all ethical safeguard tests
-2. Not modify gameplay logic
-3. Focus only on performance
-4. Include appropriate tests
-
-## Integration with Upstream
-
-This client embeds the [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) game without modifications:
-
-1. **Sync upstream**: `npm run sync-upstream` clones/updates the game repository to `upstream-game/`
-2. **Build frontend**: `npm run build:frontend` builds the upstream client and copies to `dist/`
-3. **Tauri wrapper**: The Tauri shell loads the built frontend with performance optimizations
-
-### Performance Layer
-
-The performance optimization layer is injected as a separate module that:
-- Hooks into Phaser's render loop for metrics (does not modify rendering)
-- Provides asset caching via IndexedDB
-- Exposes native system APIs through Tauri IPC
-
-### Important Notes
-
-- All game logic runs unmodified from upstream
-- Server connections go directly to official servers
-- No gameplay data is intercepted or modified
-- Updates require re-running `npm run sync-upstream`
-
-## Disclaimer
-
-This is an unofficial client. Pokemon Auto Chess is developed by the [keldaanCommunity](https://github.com/keldaanCommunity/pokemonAutoChess).
-
-All Pokemon-related content is © Nintendo/Creatures Inc./GAME FREAK Inc.
+BSD-3-Clause
