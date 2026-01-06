@@ -130,15 +130,30 @@ function createIndexHtml() {
     // Update overlay with native stats
     async function updateOverlay() {
       if (!visible) return;
-      document.getElementById('pac-fps').textContent = fps;
 
-      if (window.__TAURI__) {
+      // Update FPS
+      const fpsEl = document.getElementById('pac-fps');
+      if (fpsEl) fpsEl.textContent = fps;
+
+      // Update native stats - Tauri v2 uses window.__TAURI__.core.invoke
+      const invoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
+      if (invoke) {
         try {
-          const stats = await window.__TAURI__.invoke('get_performance_stats');
-          document.getElementById('pac-cpu').textContent = stats.cpu_usage.toFixed(1);
-          document.getElementById('pac-mem').textContent = stats.memory_usage_mb;
-          document.getElementById('pac-gpu').textContent = stats.gpu_usage !== null ? stats.gpu_usage.toFixed(0) + '%' : 'N/A';
-        } catch(e) { console.error('Stats error:', e); }
+          const stats = await invoke('get_performance_stats');
+          console.log('[PACDeluxe] Stats received:', stats);
+          if (stats) {
+            const cpuEl = document.getElementById('pac-cpu');
+            const memEl = document.getElementById('pac-mem');
+            const gpuEl = document.getElementById('pac-gpu');
+            if (cpuEl) cpuEl.textContent = typeof stats.cpu_usage === 'number' ? stats.cpu_usage.toFixed(1) : '--';
+            if (memEl) memEl.textContent = stats.memory_usage_mb ?? '--';
+            if (gpuEl) gpuEl.textContent = 'N/A';
+          }
+        } catch(e) {
+          console.error('[PACDeluxe] Stats error:', e);
+        }
+      } else {
+        console.warn('[PACDeluxe] Tauri invoke not available. __TAURI__:', window.__TAURI__);
       }
     }
     setInterval(updateOverlay, 500);

@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Instant;
-use sysinfo::System;
+use sysinfo::{System, Pid};
 use tauri::WebviewWindow;
 use tracing::{debug, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,11 +39,17 @@ impl PerformanceMonitor {
     pub fn get_stats(&self) -> PerformanceStats {
         let mut system = self.system.lock().unwrap_or_else(|e| e.into_inner());
         system.refresh_cpu_usage();
-        system.refresh_memory();
+        system.refresh_processes(sysinfo::ProcessesToUpdate::All);
 
         let uptime = self.start_time.elapsed();
         let cpu_usage = system.global_cpu_usage();
-        let memory_usage_mb = system.used_memory() / 1024 / 1024;
+
+        // Get memory for this process specifically (not system-wide)
+        let our_pid = Pid::from_u32(std::process::id());
+        let memory_usage_mb = system
+            .process(our_pid)
+            .map(|p| p.memory() / 1024 / 1024)
+            .unwrap_or(0);
 
         PerformanceStats {
             cpu_usage,

@@ -32,17 +32,26 @@ const OVERLAY_SCRIPT: &str = r#"
         document.head.appendChild(scrollbarFix);
         console.log('[PACDeluxe] Scrollbar fix applied');
 
+        // Remove any existing overlay (from HTML template)
+        const existingOverlay = document.getElementById('pac-perf');
+        if (existingOverlay) existingOverlay.remove();
+
         // Create overlay element
         const overlay = document.createElement('div');
-        overlay.id = 'pac-perf';
+        overlay.id = 'pac-perf-rust';
         overlay.innerHTML = `
             <div style="color:#0f8;font-weight:bold;margin-bottom:6px;border-bottom:1px solid #0f03;padding-bottom:4px;">⚡ PACDeluxe</div>
-            <div>FPS: <span id="pac-fps">--</span></div>
-            <div>CPU: <span id="pac-cpu">--</span>%</div>
-            <div>MEM: <span id="pac-mem">--</span> MB</div>
+            <div>FPS: <span class="fps-val">--</span></div>
+            <div>CPU: <span class="cpu-val">--</span>%</div>
+            <div>MEM: <span class="mem-val">--</span> GB</div>
         `;
         overlay.style.cssText = 'display:none;position:fixed;top:8px;right:8px;background:rgba(0,0,0,0.9);color:#0f0;font:12px/1.4 monospace;padding:10px 14px;border-radius:6px;z-index:99999;border:1px solid #0f04;min-width:140px;box-shadow:0 2px 10px rgba(0,0,0,0.5);';
         document.body.appendChild(overlay);
+
+        // Store element references (not IDs)
+        const fpsEl = overlay.querySelector('.fps-val');
+        const cpuEl = overlay.querySelector('.cpu-val');
+        const memEl = overlay.querySelector('.mem-val');
 
         let visible = false;
         let frameCount = 0;
@@ -62,16 +71,25 @@ const OVERLAY_SCRIPT: &str = r#"
         }
         countFrame();
 
-        // Update overlay
+        // Update overlay using stored element references
         async function updateOverlay() {
             if (!visible) return;
-            document.getElementById('pac-fps').textContent = fps;
-            if (window.__TAURI__) {
+            if (fpsEl) fpsEl.textContent = fps;
+
+            // Tauri v2: invoke is at window.__TAURI__.core.invoke
+            const invoke = window.__TAURI__?.core?.invoke;
+            if (invoke) {
                 try {
-                    const stats = await window.__TAURI__.core.invoke('get_performance_stats');
-                    document.getElementById('pac-cpu').textContent = stats.cpu_usage.toFixed(1);
-                    document.getElementById('pac-mem').textContent = stats.memory_usage_mb;
-                } catch(e) { console.error('[PACDeluxe] Stats error:', e); }
+                    const stats = await invoke('get_performance_stats');
+                    if (stats) {
+                        if (cpuEl) cpuEl.textContent = typeof stats.cpu_usage === 'number' ? stats.cpu_usage.toFixed(1) : '--';
+                        if (memEl) memEl.textContent = typeof stats.memory_usage_mb === 'number' ? (stats.memory_usage_mb / 1024).toFixed(2) : '--';
+                    }
+                } catch(e) {
+                    console.error('[PACDeluxe] Stats error:', e);
+                }
+            } else {
+                console.warn('[PACDeluxe] Tauri invoke not found');
             }
         }
         setInterval(updateOverlay, 500);

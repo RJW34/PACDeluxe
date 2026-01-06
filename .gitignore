@@ -16,9 +16,9 @@ Cargo.lock
 # Tauri
 src-tauri/target/
 src-tauri/WixTools/
-src-tauri/icons/*.ico
+# Keep icons tracked for CI builds, but ignore temp files
 src-tauri/icons/*.icns
-src-tauri/icons/*.png
+src-tauri/icons/*.webp
 
 # IDE
 .idea/
@@ -61,8 +61,16 @@ upstream-game/
 *.tmp
 *.temp
 
-# Debug scripts (keep run-dev.ps1)
+# Debug/dev scripts
 fix-*.ps1
+run-dev.ps1
+run-dev.bat
+
+# Development instructions (not user-facing)
+CLAUDE.md
+
+# Dev tooling configs
+biome.json
 
 # Windows artifacts
 nul
