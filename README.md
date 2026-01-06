@@ -2,6 +2,12 @@
 
 A native Windows 11 desktop client for [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) (8-player auto-battler) focused exclusively on performance optimization.
 
+## Download
+
+**[Download Latest Release](https://github.com/RJW34/PACDeluxe/releases/latest)**
+
+Run the installer (`PACDeluxe_x.x.x_x64-setup.exe`) and follow the prompts.
+
 ## Overview
 
 PACDeluxe is a native Tauri wrapper for the Pokemon Auto Chess browser game that provides:
