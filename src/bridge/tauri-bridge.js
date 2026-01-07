@@ -55,6 +55,23 @@ const getInvoke = async () => {
  */
 
 /**
+ * @typedef {Object} ElevationTelemetry
+ * @property {number} processes_elevated - Number of WebView2 processes elevated
+ * @property {string} mode - Monitoring mode: "wmi" (event-driven) or "polling" (fallback)
+ * @property {boolean} is_active - Whether the optimizer is currently running
+ * @property {boolean} wmi_available - Whether WMI event subscription is working
+ */
+
+/**
+ * @typedef {Object} GpuStats
+ * @property {number} usage_percent - GPU utilization percentage (0-100)
+ * @property {string|null} name - GPU name from DXGI
+ * @property {number} vram_total_mb - Dedicated video memory in MB
+ * @property {boolean} available - Whether GPU monitoring is available
+ * @property {string|null} error - Error message if monitoring failed
+ */
+
+/**
  * Tauri Bridge class for native communication
  */
 export class TauriBridge {
@@ -119,6 +136,38 @@ export class TauriBridge {
       return await this.invoke('get_system_info');
     } catch (error) {
       console.error('[TauriBridge] Failed to get system info:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get WebView2 elevation telemetry
+   * Shows optimizer status and how many processes have been elevated
+   * @returns {Promise<ElevationTelemetry|null>}
+   */
+  async getElevationTelemetry() {
+    if (!this.invoke) return null;
+
+    try {
+      return await this.invoke('get_webview_telemetry');
+    } catch (error) {
+      console.error('[TauriBridge] Failed to get elevation telemetry:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get GPU usage statistics
+   * Uses Windows Performance Counters (PDH API) for GPU engine utilization
+   * @returns {Promise<GpuStats|null>}
+   */
+  async getGpuStats() {
+    if (!this.invoke) return null;
+
+    try {
+      return await this.invoke('get_gpu_stats');
+    } catch (error) {
+      console.error('[TauriBridge] Failed to get GPU stats:', error);
       return null;
     }
   }

@@ -17,6 +17,7 @@ export { FrameMonitor, frameMonitor, getHighResTimestamp } from './performance/f
 export { InputOptimizer, inputOptimizer, requestHighPriorityCallback, getInputTimestamp } from './performance/input-optimizer.js';
 export { AssetCache, assetCache } from './performance/asset-cache.js';
 export { ProfilingOverlay, profilingOverlay } from './performance/profiling-overlay.js';
+export { NetworkMonitor, networkMonitor } from './performance/network-monitor.js';
 
 // Bridge modules
 export { TauriBridge, tauriBridge, isTauri } from './bridge/tauri-bridge.js';
@@ -129,6 +130,7 @@ export async function getPerformanceStatus() {
   const { frameMonitor } = await import('./performance/frame-monitor.js');
   const { inputOptimizer } = await import('./performance/input-optimizer.js');
   const { assetCache } = await import('./performance/asset-cache.js');
+  const { networkMonitor } = await import('./performance/network-monitor.js');
 
   return {
     isNative: tauriBridge.hasNativeFeatures(),
@@ -136,6 +138,7 @@ export async function getPerformanceStatus() {
     frameMetrics: frameMonitor.getMetrics(),
     inputMetrics: inputOptimizer.getMetrics(),
     cacheStats: assetCache.getStats(),
+    networkMetrics: networkMonitor.getMetrics(),
   };
 }
 

@@ -43,7 +43,9 @@ const OVERLAY_SCRIPT: &str = r#"
             <div style="color:#0f8;font-weight:bold;margin-bottom:6px;border-bottom:1px solid #0f03;padding-bottom:4px;">⚡ PACDeluxe</div>
             <div>FPS: <span class="fps-val">--</span></div>
             <div>CPU: <span class="cpu-val">--</span>%</div>
+            <div>GPU: <span class="gpu-val">--</span>%</div>
             <div>MEM: <span class="mem-val">--</span> GB</div>
+            <div>HDR: <span class="hdr-val">--</span></div>
         `;
         overlay.style.cssText = 'display:none;position:fixed;top:8px;right:8px;background:rgba(0,0,0,0.9);color:#0f0;font:12px/1.4 monospace;padding:10px 14px;border-radius:6px;z-index:99999;border:1px solid #0f04;min-width:140px;box-shadow:0 2px 10px rgba(0,0,0,0.5);';
         document.body.appendChild(overlay);
@@ -51,7 +53,9 @@ const OVERLAY_SCRIPT: &str = r#"
         // Store element references (not IDs)
         const fpsEl = overlay.querySelector('.fps-val');
         const cpuEl = overlay.querySelector('.cpu-val');
+        const gpuEl = overlay.querySelector('.gpu-val');
         const memEl = overlay.querySelector('.mem-val');
+        const hdrEl = overlay.querySelector('.hdr-val');
 
         let visible = false;
         let frameCount = 0;
@@ -80,10 +84,36 @@ const OVERLAY_SCRIPT: &str = r#"
             const invoke = window.__TAURI__?.core?.invoke;
             if (invoke) {
                 try {
+                    // Fetch CPU/Memory stats
                     const stats = await invoke('get_performance_stats');
                     if (stats) {
                         if (cpuEl) cpuEl.textContent = typeof stats.cpu_usage === 'number' ? stats.cpu_usage.toFixed(1) : '--';
                         if (memEl) memEl.textContent = typeof stats.memory_usage_mb === 'number' ? (stats.memory_usage_mb / 1024).toFixed(2) : '--';
+                    }
+                    // Fetch GPU stats
+                    const gpuStats = await invoke('get_gpu_stats');
+                    if (gpuStats && gpuEl) {
+                        if (gpuStats.available) {
+                            gpuEl.textContent = gpuStats.usage_percent.toFixed(1);
+                        } else {
+                            gpuEl.textContent = 'N/A';
+                        }
+                    }
+                    // Fetch HDR status (only once, doesn't change often)
+                    if (hdrEl && hdrEl.textContent === '--') {
+                        const hdrInfo = await invoke('get_hdr_status');
+                        if (hdrInfo) {
+                            if (hdrInfo.enabled) {
+                                hdrEl.textContent = hdrInfo.color_space;
+                                hdrEl.style.color = '#ff0';
+                            } else if (hdrInfo.supported) {
+                                hdrEl.textContent = 'Available';
+                                hdrEl.style.color = '#0ff';
+                            } else {
+                                hdrEl.textContent = 'Off';
+                                hdrEl.style.color = '#888';
+                            }
+                        }
                     }
                 } catch(e) {
                     console.error('[PACDeluxe] Stats error:', e);
@@ -359,6 +389,9 @@ fn main() {
             commands::get_performance_stats,
             commands::get_system_info,
             commands::toggle_fullscreen,
+            commands::get_webview_telemetry,
+            commands::get_gpu_stats,
+            commands::get_hdr_status,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run application");

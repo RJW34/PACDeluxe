@@ -6,9 +6,19 @@
  *
  * Uses O(1) LRU eviction via doubly-linked list for optimal performance.
  *
+ * Features:
+ * - Smart version detection: clears stale assets when game updates
+ * - Discovered assets persistence: remembers assets for faster prewarm
+ * - Auto-prewarm: loads known assets on startup
+ *
  * CRITICAL: This cache ONLY stores assets.
  * It does NOT modify, intercept, or manipulate game data.
  */
+
+// LocalStorage keys for persistence
+const CACHE_VERSION_KEY = '__pac_cache_version__';
+const DISCOVERED_ASSETS_KEY = '__pac_discovered_assets__';
+const CACHE_STATS_KEY = '__pac_cache_stats__';
 
 /**
  * @typedef {Object} CacheStats
@@ -277,6 +287,8 @@ export class AssetCache {
   /**
    * Initialize the cache and install fetch interceptor
    * @param {Object} options
+   * @param {number} options.maxSizeMB - Maximum cache size in MB
+   * @param {boolean} options.autoPrewarm - Whether to auto-prewarm on init (default: true)
    */
   async init(options = {}) {
     if (this.isInitialized) {
@@ -288,11 +300,132 @@ export class AssetCache {
       this.maxSizeBytes = options.maxSizeMB * 1024 * 1024;
     }
 
+    // Check build version for cache invalidation
+    const versionChanged = this.checkVersion();
+    if (versionChanged) {
+      console.log('[AssetCache] Game version changed, cache metadata cleared');
+    }
+
     // Install fetch interceptor
     this.installFetchInterceptor();
 
     this.isInitialized = true;
     console.log(`[AssetCache] Initialized with ${this.maxSizeBytes / 1024 / 1024} MB limit`);
+
+    // Auto-prewarm from discovered assets if available
+    const autoPrewarm = options.autoPrewarm !== false;
+    if (autoPrewarm && !versionChanged) {
+      const discoveredAssets = this.loadDiscoveredAssets();
+      if (discoveredAssets.length > 0) {
+        console.log(`[AssetCache] Auto-prewarming ${discoveredAssets.length} discovered assets`);
+        // Prewarm in background with low priority
+        this.prewarm(discoveredAssets, { concurrency: 2 }).catch(err => {
+          console.warn('[AssetCache] Auto-prewarm failed:', err);
+        });
+      }
+    }
+  }
+
+  /**
+   * Check if build version has changed, clear stale data if so
+   * @returns {boolean} True if version changed and data was cleared
+   */
+  checkVersion() {
+    const currentVersion = typeof window !== 'undefined'
+      ? window.__PAC_BUILD_VERSION__
+      : null;
+
+    if (!currentVersion) {
+      console.warn('[AssetCache] No build version found, skipping version check');
+      return false;
+    }
+
+    try {
+      const storedVersion = localStorage.getItem(CACHE_VERSION_KEY);
+
+      if (storedVersion !== currentVersion) {
+        console.log(`[AssetCache] Version mismatch: ${storedVersion || 'none'} -> ${currentVersion}`);
+
+        // Clear stale discovered assets
+        localStorage.removeItem(DISCOVERED_ASSETS_KEY);
+        localStorage.removeItem(CACHE_STATS_KEY);
+
+        // Store new version
+        localStorage.setItem(CACHE_VERSION_KEY, currentVersion);
+
+        return true;
+      }
+
+      console.log(`[AssetCache] Version match: ${currentVersion}`);
+      return false;
+    } catch (err) {
+      console.warn('[AssetCache] localStorage error during version check:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Get the current build version
+   * @returns {string|null}
+   */
+  getBuildVersion() {
+    return typeof window !== 'undefined' ? window.__PAC_BUILD_VERSION__ : null;
+  }
+
+  /**
+   * Load discovered assets from localStorage
+   * @returns {string[]}
+   */
+  loadDiscoveredAssets() {
+    try {
+      const stored = localStorage.getItem(DISCOVERED_ASSETS_KEY);
+      if (stored) {
+        const assets = JSON.parse(stored);
+        if (Array.isArray(assets)) {
+          return assets;
+        }
+      }
+    } catch (err) {
+      console.warn('[AssetCache] Failed to load discovered assets:', err);
+    }
+    return [];
+  }
+
+  /**
+   * Save discovered assets to localStorage for future prewarming
+   * @param {string[]} assets
+   */
+  saveDiscoveredAssets(assets) {
+    try {
+      // Limit to 500 assets to avoid localStorage quota issues
+      const toSave = assets.slice(0, 500);
+      localStorage.setItem(DISCOVERED_ASSETS_KEY, JSON.stringify(toSave));
+      console.log(`[AssetCache] Saved ${toSave.length} discovered assets for future prewarm`);
+    } catch (err) {
+      console.warn('[AssetCache] Failed to save discovered assets:', err);
+    }
+  }
+
+  /**
+   * Record currently cached assets for future prewarming
+   * Call this after the game has fully loaded
+   */
+  recordDiscoveredAssets() {
+    // Get all URLs we've successfully cached
+    const cachedUrls = Array.from(this.cache.keys());
+
+    // Also discover assets from the DOM
+    const domAssets = discoverPageAssets();
+
+    // Combine and deduplicate
+    const allAssets = [...new Set([...cachedUrls, ...domAssets])];
+
+    // Filter to only cacheable assets
+    const cacheableAssets = allAssets.filter(url => this.shouldCache(url));
+
+    this.saveDiscoveredAssets(cacheableAssets);
+
+    return cacheableAssets.length;
   }
 
   /**
@@ -488,13 +621,17 @@ export class AssetCache {
       prewarmed: this.stats.prewarmed,
       prewarmFailed: this.stats.prewarmFailed,
       isPrewarming: this.isPrewarming,
+      buildVersion: this.getBuildVersion(),
+      discoveredAssetCount: this.loadDiscoveredAssets().length,
     };
   }
 
   /**
    * Clear the cache
+   * @param {Object} options
+   * @param {boolean} options.clearPersisted - Also clear localStorage data (default: false)
    */
-  clear() {
+  clear(options = {}) {
     this.cache.clear();
     this.head = null;
     this.tail = null;
@@ -508,7 +645,27 @@ export class AssetCache {
       prewarmFailed: 0,
     };
     this.prewarmProgress = { total: 0, completed: 0, failed: 0 };
+
+    if (options.clearPersisted) {
+      this.clearPersistedData();
+    }
+
     console.log('[AssetCache] Cache cleared');
+  }
+
+  /**
+   * Clear all persisted data from localStorage
+   * Use this when you want a complete reset
+   */
+  clearPersistedData() {
+    try {
+      localStorage.removeItem(CACHE_VERSION_KEY);
+      localStorage.removeItem(DISCOVERED_ASSETS_KEY);
+      localStorage.removeItem(CACHE_STATS_KEY);
+      console.log('[AssetCache] Persisted data cleared');
+    } catch (err) {
+      console.warn('[AssetCache] Failed to clear persisted data:', err);
+    }
   }
 
   /**
@@ -604,6 +761,7 @@ export function discoverPageAssets() {
  * Start prewarming with critical assets plus discovered page assets
  * Call this after the page has loaded and user is in lobby/menu
  * @param {Object} options - Options to pass to prewarm()
+ * @param {boolean} options.recordAssets - Save discovered assets for future prewarm (default: true)
  * @returns {Promise<{success: number, failed: number, skipped: number}>}
  */
 export async function startPrewarm(options = {}) {
@@ -612,5 +770,25 @@ export async function startPrewarm(options = {}) {
   const allAssets = [...new Set([...CRITICAL_ASSETS, ...discoveredAssets])];
 
   console.log(`[AssetCache] Starting prewarm with ${allAssets.length} assets`);
-  return assetCache.prewarm(allAssets, options);
+  const result = await assetCache.prewarm(allAssets, options);
+
+  // Record assets for future auto-prewarm (unless disabled)
+  if (options.recordAssets !== false) {
+    assetCache.recordDiscoveredAssets();
+  }
+
+  return result;
+}
+
+/**
+ * Get cache version info for debugging
+ * @returns {Object}
+ */
+export function getCacheVersionInfo() {
+  return {
+    buildVersion: window.__PAC_BUILD_VERSION__ || null,
+    buildTime: window.__PAC_BUILD_TIME__ || null,
+    storedVersion: localStorage.getItem(CACHE_VERSION_KEY),
+    discoveredAssetCount: assetCache.loadDiscoveredAssets().length,
+  };
 }

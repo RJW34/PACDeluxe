@@ -9,7 +9,7 @@ use std::time::Instant;
 use sysinfo::{System, Pid};
 use tauri::WebviewWindow;
 use tracing::{debug, info, warn};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use wmi::{COMLibrary, WMIConnection};
 
@@ -70,6 +70,504 @@ static WEBVIEW_OPTIMIZER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Flag to track if WMI watcher is active (vs polling fallback)
 static WMI_WATCHER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Counter for number of WebView2 processes elevated
+static PROCESSES_ELEVATED: AtomicU32 = AtomicU32::new(0);
+
+/// WebView2 elevation telemetry for monitoring optimization effectiveness
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElevationTelemetry {
+    /// Number of WebView2 processes that have been elevated
+    pub processes_elevated: u32,
+    /// Current monitoring mode: "wmi" (event-driven) or "polling" (fallback)
+    pub mode: String,
+    /// Whether the optimizer thread is currently running
+    pub is_active: bool,
+    /// Whether WMI event subscription is working
+    pub wmi_available: bool,
+}
+
+/// Get current WebView2 elevation telemetry
+pub fn get_elevation_telemetry() -> ElevationTelemetry {
+    let wmi_active = WMI_WATCHER_ACTIVE.load(Ordering::Relaxed);
+    let optimizer_running = WEBVIEW_OPTIMIZER_RUNNING.load(Ordering::Relaxed);
+
+    ElevationTelemetry {
+        processes_elevated: PROCESSES_ELEVATED.load(Ordering::Relaxed),
+        mode: if wmi_active { "wmi".to_string() } else { "polling".to_string() },
+        is_active: optimizer_running,
+        wmi_available: wmi_active,
+    }
+}
+
+// ==================== GPU Monitoring ====================
+
+/// GPU usage statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuStats {
+    /// GPU utilization percentage (0-100)
+    pub usage_percent: f32,
+    /// GPU name (from DXGI)
+    pub name: Option<String>,
+    /// Dedicated video memory in MB
+    pub vram_total_mb: u64,
+    /// Whether GPU monitoring is available
+    pub available: bool,
+    /// Error message if monitoring failed
+    pub error: Option<String>,
+}
+
+impl Default for GpuStats {
+    fn default() -> Self {
+        Self {
+            usage_percent: 0.0,
+            name: None,
+            vram_total_mb: 0,
+            available: false,
+            error: None,
+        }
+    }
+}
+
+/// GPU Monitor using Windows Performance Counters (PDH API)
+/// Requires Windows 10 1709+ for GPU Engine counters
+pub struct GpuMonitor {
+    query_handle: Option<isize>,
+    counter_handle: Option<isize>,
+    gpu_name: Option<String>,
+    vram_mb: u64,
+    is_initialized: bool,
+    last_error: Option<String>,
+}
+
+impl GpuMonitor {
+    /// Create a new GPU monitor
+    pub fn new() -> Self {
+        let mut monitor = Self {
+            query_handle: None,
+            counter_handle: None,
+            gpu_name: None,
+            vram_mb: 0,
+            is_initialized: false,
+            last_error: None,
+        };
+
+        // Try to initialize
+        if let Err(e) = monitor.initialize() {
+            monitor.last_error = Some(e);
+        }
+
+        monitor
+    }
+
+    /// Initialize PDH query and counters
+    fn initialize(&mut self) -> Result<(), String> {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::Performance::{
+            PdhOpenQueryW, PdhAddEnglishCounterW, PdhCollectQueryData,
+        };
+
+        // First, get GPU info from DXGI
+        self.detect_gpu_info();
+
+        unsafe {
+            // Open PDH query
+            let mut query: isize = 0;
+            let status = PdhOpenQueryW(PCWSTR::null(), 0, &mut query);
+            if status != 0 {
+                return Err(format!("PdhOpenQueryW failed: 0x{:08X}", status));
+            }
+            self.query_handle = Some(query);
+
+            // Add GPU Engine utilization counter
+            // This counter captures all GPU engines (3D, Copy, Video Encode/Decode, etc.)
+            // We use wildcard to get all engines, then take the max
+            let counter_path: Vec<u16> = "\\GPU Engine(*)\\Utilization Percentage\0"
+                .encode_utf16()
+                .collect();
+
+            let mut counter: isize = 0;
+            let status = PdhAddEnglishCounterW(
+                query,
+                PCWSTR::from_raw(counter_path.as_ptr()),
+                0,
+                &mut counter,
+            );
+
+            if status != 0 {
+                // GPU counters might not be available (Windows 10 < 1709 or no GPU)
+                // Try alternative counter path
+                let alt_counter_path: Vec<u16> = "\\GPU Engine(*)\\Running Time\0"
+                    .encode_utf16()
+                    .collect();
+
+                let status2 = PdhAddEnglishCounterW(
+                    query,
+                    PCWSTR::from_raw(alt_counter_path.as_ptr()),
+                    0,
+                    &mut counter,
+                );
+
+                if status2 != 0 {
+                    return Err(format!(
+                        "GPU counters not available (requires Windows 10 1709+): 0x{:08X}",
+                        status
+                    ));
+                }
+            }
+
+            self.counter_handle = Some(counter);
+
+            // Collect initial data (first collection initializes the counters)
+            let _ = PdhCollectQueryData(query);
+
+            self.is_initialized = true;
+            info!("GPU monitoring initialized: {:?}", self.gpu_name);
+            Ok(())
+        }
+    }
+
+    /// Detect GPU name and VRAM from DXGI
+    fn detect_gpu_info(&mut self) {
+        use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
+
+        unsafe {
+            if let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() {
+                let mut i = 0u32;
+                while let Ok(adapter) = factory.EnumAdapters1(i) {
+                    if let Ok(desc) = adapter.GetDesc1() {
+                        let name: String = desc.Description.iter()
+                            .take_while(|&&c| c != 0)
+                            .map(|&c| char::from_u32(c as u32).unwrap_or('?'))
+                            .collect();
+
+                        // Skip software/basic adapters
+                        if !name.contains("Basic") && !name.contains("Microsoft") {
+                            self.gpu_name = Some(name.trim().to_string());
+                            self.vram_mb = desc.DedicatedVideoMemory as u64 / (1024 * 1024);
+                            debug!("Detected GPU: {} ({}MB VRAM)",
+                                   self.gpu_name.as_ref().unwrap(), self.vram_mb);
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// Get current GPU usage
+    pub fn get_usage(&self) -> f32 {
+        if !self.is_initialized {
+            return 0.0;
+        }
+
+        let (query, counter) = match (self.query_handle, self.counter_handle) {
+            (Some(q), Some(c)) => (q, c),
+            _ => return 0.0,
+        };
+
+        use windows::Win32::System::Performance::{
+            PdhCollectQueryData, PdhGetFormattedCounterArrayW,
+            PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE,
+        };
+
+        unsafe {
+            // Collect fresh data
+            let status = PdhCollectQueryData(query);
+            if status != 0 {
+                debug!("PdhCollectQueryData failed: 0x{:08X}", status);
+                return 0.0;
+            }
+
+            // Get the counter values (multiple engines)
+            let mut buffer_size: u32 = 0;
+            let mut item_count: u32 = 0;
+
+            // First call to get required buffer size
+            let status = PdhGetFormattedCounterArrayW(
+                counter,
+                PDH_FMT_DOUBLE,
+                &mut buffer_size,
+                &mut item_count,
+                None,
+            );
+
+            // PDH_MORE_DATA (0x800007D2) means we need a bigger buffer
+            const PDH_MORE_DATA_VALUE: u32 = 0x800007D2;
+            if status != PDH_MORE_DATA_VALUE && status != 0 {
+                debug!("PdhGetFormattedCounterArrayW size query failed: 0x{:08X}", status);
+                return 0.0;
+            }
+
+            if buffer_size == 0 || item_count == 0 {
+                return 0.0;
+            }
+
+            // Allocate buffer and get values
+            let item_size = std::mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+            let buffer_len = (buffer_size as usize + item_size - 1) / item_size;
+            let mut buffer: Vec<PDH_FMT_COUNTERVALUE_ITEM_W> = vec![
+                std::mem::zeroed();
+                buffer_len.max(item_count as usize)
+            ];
+
+            let status = PdhGetFormattedCounterArrayW(
+                counter,
+                PDH_FMT_DOUBLE,
+                &mut buffer_size,
+                &mut item_count,
+                Some(buffer.as_mut_ptr()),
+            );
+
+            if status != 0 {
+                debug!("PdhGetFormattedCounterArrayW failed: 0x{:08X}", status);
+                return 0.0;
+            }
+
+            // Find the maximum utilization across all GPU engines
+            let mut max_usage: f64 = 0.0;
+            for i in 0..item_count as usize {
+                if i < buffer.len() {
+                    let value = buffer[i].FmtValue.Anonymous.doubleValue;
+                    if value > max_usage {
+                        max_usage = value;
+                    }
+                }
+            }
+
+            // Clamp to 0-100
+            max_usage.clamp(0.0, 100.0) as f32
+        }
+    }
+
+    /// Get full GPU stats
+    pub fn get_stats(&self) -> GpuStats {
+        GpuStats {
+            usage_percent: self.get_usage(),
+            name: self.gpu_name.clone(),
+            vram_total_mb: self.vram_mb,
+            available: self.is_initialized,
+            error: self.last_error.clone(),
+        }
+    }
+
+    /// Check if GPU monitoring is available
+    pub fn is_available(&self) -> bool {
+        self.is_initialized
+    }
+}
+
+impl Default for GpuMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for GpuMonitor {
+    fn drop(&mut self) {
+        if let Some(query) = self.query_handle {
+            use windows::Win32::System::Performance::PdhCloseQuery;
+            unsafe {
+                let _ = PdhCloseQuery(query);
+            }
+        }
+    }
+}
+
+// Global GPU monitor instance (lazy initialized)
+static GPU_MONITOR: std::sync::OnceLock<Mutex<GpuMonitor>> = std::sync::OnceLock::new();
+
+/// Get or initialize the global GPU monitor
+pub fn get_gpu_monitor() -> &'static Mutex<GpuMonitor> {
+    GPU_MONITOR.get_or_init(|| {
+        info!("Initializing GPU monitor");
+        Mutex::new(GpuMonitor::new())
+    })
+}
+
+/// Get current GPU stats (convenience function)
+pub fn get_gpu_stats() -> GpuStats {
+    match get_gpu_monitor().lock() {
+        Ok(monitor) => monitor.get_stats(),
+        Err(e) => {
+            warn!("Failed to lock GPU monitor: {}", e);
+            GpuStats {
+                error: Some("Lock failed".to_string()),
+                ..Default::default()
+            }
+        }
+    }
+}
+
+// ==================== HDR Support ====================
+
+/// HDR display information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HdrInfo {
+    /// Whether HDR is supported by the display
+    pub supported: bool,
+    /// Whether HDR is currently enabled in Windows
+    pub enabled: bool,
+    /// Display color space (e.g., "SDR", "HDR10", "scRGB")
+    pub color_space: String,
+    /// Bits per color channel
+    pub bits_per_color: u32,
+    /// Display name
+    pub display_name: String,
+    /// Maximum luminance in nits
+    pub max_luminance: f32,
+    /// Minimum luminance in nits
+    pub min_luminance: f32,
+    /// Maximum full-frame luminance in nits
+    pub max_full_frame_luminance: f32,
+    /// Error message if detection failed
+    pub error: Option<String>,
+}
+
+impl Default for HdrInfo {
+    fn default() -> Self {
+        Self {
+            supported: false,
+            enabled: false,
+            color_space: "SDR".to_string(),
+            bits_per_color: 8,
+            display_name: "Unknown".to_string(),
+            max_luminance: 0.0,
+            min_luminance: 0.0,
+            max_full_frame_luminance: 0.0,
+            error: None,
+        }
+    }
+}
+
+/// Detect HDR capability and status for all displays
+pub fn detect_hdr_info() -> HdrInfo {
+    use windows::core::Interface;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIFactory1, IDXGIOutput6,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,
+    };
+
+    let mut info = HdrInfo::default();
+
+    unsafe {
+        // Create DXGI factory
+        let factory: IDXGIFactory1 = match CreateDXGIFactory1() {
+            Ok(f) => f,
+            Err(e) => {
+                info.error = Some(format!("Failed to create DXGI factory: {:?}", e));
+                return info;
+            }
+        };
+
+        // Enumerate adapters
+        let mut adapter_index = 0u32;
+        while let Ok(adapter) = factory.EnumAdapters1(adapter_index) {
+            // Enumerate outputs for this adapter
+            let mut output_index = 0u32;
+            while let Ok(output) = adapter.EnumOutputs(output_index) {
+                // Try to get IDXGIOutput6 for HDR info
+                let output6_result: Result<IDXGIOutput6, _> = output.cast();
+                if let Ok(output6) = output6_result {
+                    if let Ok(desc1) = output6.GetDesc1() {
+                        // Get display name
+                        let name: String = desc1.DeviceName.iter()
+                            .take_while(|&&c| c != 0)
+                            .map(|&c| char::from_u32(c as u32).unwrap_or('?'))
+                            .collect();
+
+                        // Check HDR support via color space
+                        // HDR10 uses DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+                        let is_hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+                            || desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+
+                        let color_space_name = match desc1.ColorSpace {
+                            DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 => "HDR10 (BT.2020 PQ)",
+                            DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 => "scRGB (Linear)",
+                            _ => "SDR (sRGB)",
+                        };
+
+                        // If this output supports HDR, use it
+                        if is_hdr || desc1.BitsPerColor > 8 {
+                            info.supported = true;
+                            info.enabled = is_hdr;
+                            info.color_space = color_space_name.to_string();
+                            info.bits_per_color = desc1.BitsPerColor;
+                            info.display_name = name.trim().to_string();
+                            info.max_luminance = desc1.MaxLuminance;
+                            info.min_luminance = desc1.MinLuminance;
+                            info.max_full_frame_luminance = desc1.MaxFullFrameLuminance;
+
+                            debug!(
+                                "HDR display found: {} - {} ({}-bit), Max: {} nits",
+                                info.display_name,
+                                info.color_space,
+                                info.bits_per_color,
+                                info.max_luminance
+                            );
+
+                            return info;
+                        }
+
+                        // Update with first display info even if not HDR
+                        if info.display_name == "Unknown" {
+                            info.display_name = name.trim().to_string();
+                            info.bits_per_color = desc1.BitsPerColor;
+                            info.max_luminance = desc1.MaxLuminance;
+                            info.min_luminance = desc1.MinLuminance;
+                            info.max_full_frame_luminance = desc1.MaxFullFrameLuminance;
+                        }
+                    }
+                }
+                output_index += 1;
+            }
+            adapter_index += 1;
+        }
+    }
+
+    debug!("HDR status: supported={}, enabled={}", info.supported, info.enabled);
+    info
+}
+
+/// Get cached HDR info (for frequent queries)
+static HDR_INFO: std::sync::OnceLock<Mutex<HdrInfo>> = std::sync::OnceLock::new();
+
+/// Get or refresh HDR info
+pub fn get_hdr_info() -> HdrInfo {
+    // Initialize on first call
+    let hdr_lock = HDR_INFO.get_or_init(|| {
+        info!("Detecting HDR capability");
+        Mutex::new(detect_hdr_info())
+    });
+
+    match hdr_lock.lock() {
+        Ok(info) => info.clone(),
+        Err(e) => {
+            warn!("Failed to lock HDR info: {}", e);
+            HdrInfo {
+                error: Some("Lock failed".to_string()),
+                ..Default::default()
+            }
+        }
+    }
+}
+
+/// Refresh HDR info (call when display settings change)
+pub fn refresh_hdr_info() -> HdrInfo {
+    let new_info = detect_hdr_info();
+
+    if let Some(hdr_lock) = HDR_INFO.get() {
+        if let Ok(mut info) = hdr_lock.lock() {
+            *info = new_info.clone();
+        }
+    }
+
+    new_info
+}
 
 /// WMI event structure for process start trace
 /// Maps to Win32_ProcessStartTrace WMI class
@@ -320,6 +818,9 @@ fn elevate_single_process(pid: u32) -> bool {
             if SetPriorityClass(handle, ABOVE_NORMAL_PRIORITY_CLASS).is_ok() {
                 debug!("Elevated process {} to above-normal priority", pid);
                 success = true;
+
+                // Increment telemetry counter
+                PROCESSES_ELEVATED.fetch_add(1, Ordering::Relaxed);
             }
 
             // Disable priority boost for consistent timing

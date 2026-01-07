@@ -3,7 +3,11 @@
 //! IPC commands for performance monitoring and window control.
 //! No game state access.
 
-use crate::performance::{PerformanceMonitor, PerformanceStats};
+use crate::performance::{
+    PerformanceMonitor, PerformanceStats, ElevationTelemetry, get_elevation_telemetry,
+    GpuStats, get_gpu_stats as get_gpu_stats_impl,
+    HdrInfo, get_hdr_info,
+};
 use serde::Serialize;
 use tauri::{State, Manager, AppHandle};
 use tracing::{debug, warn};
@@ -106,4 +110,40 @@ pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
 
     debug!("Fullscreen toggled: {} -> {}", is_fullscreen, !is_fullscreen);
     Ok(!is_fullscreen)
+}
+
+/// Get WebView2 process elevation telemetry
+/// Returns information about the optimizer status and elevated process count
+#[tauri::command]
+pub fn get_webview_telemetry() -> ElevationTelemetry {
+    let telemetry = get_elevation_telemetry();
+    debug!(
+        "Elevation telemetry: mode={}, elevated={}, active={}",
+        telemetry.mode, telemetry.processes_elevated, telemetry.is_active
+    );
+    telemetry
+}
+
+/// Get GPU usage statistics
+/// Uses Windows Performance Counters (PDH API) for GPU engine utilization
+#[tauri::command]
+pub fn get_gpu_stats() -> GpuStats {
+    let stats = get_gpu_stats_impl();
+    debug!(
+        "GPU stats: usage={:.1}%, available={}, gpu={:?}",
+        stats.usage_percent, stats.available, stats.name
+    );
+    stats
+}
+
+/// Get HDR display status
+/// Detects HDR capability and current status via DXGI 1.6
+#[tauri::command]
+pub fn get_hdr_status() -> HdrInfo {
+    let info = get_hdr_info();
+    debug!(
+        "HDR status: supported={}, enabled={}, color_space={}, max_nits={}",
+        info.supported, info.enabled, info.color_space, info.max_luminance
+    );
+    info
 }

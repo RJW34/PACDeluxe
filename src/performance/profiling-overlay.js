@@ -10,6 +10,14 @@
 
 import { tauriBridge } from '../bridge/tauri-bridge.js';
 import { frameMonitor } from './frame-monitor.js';
+import { networkMonitor } from './network-monitor.js';
+
+// LocalStorage key for position persistence
+const OVERLAY_POSITION_KEY = '__pac_overlay_position__';
+
+/**
+ * @typedef {'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'} DockPosition
+ */
 
 /**
  * @typedef {Object} OverlayConfig
@@ -65,6 +73,33 @@ export class ProfilingOverlay {
 
     /** @type {'line' | 'histogram'} - Current graph view mode */
     this.graphMode = 'line';
+
+    // Drag state
+    /** @type {boolean} */
+    this.isDragging = false;
+
+    /** @type {DockPosition} */
+    this.currentDock = 'top-right';
+
+    /** @type {{x: number, y: number}} */
+    this.dragStart = { x: 0, y: 0 };
+
+    /** @type {{left: number, top: number}} */
+    this.dragStartPos = { left: 0, top: 0 };
+
+    // Bound event handlers (for cleanup)
+    this._onMouseMove = this._handleMouseMove.bind(this);
+    this._onMouseUp = this._handleMouseUp.bind(this);
+
+    // Elevation telemetry (updated less frequently to reduce IPC)
+    this.lastTelemetry = null;
+    this.telemetryUpdateCounter = 0;
+    this.telemetryUpdateInterval = 50; // Update every 50 ticks (~5 seconds at 100ms interval)
+
+    // GPU stats (updated every 5 ticks = 500ms for responsiveness)
+    this.lastGpuStats = null;
+    this.gpuUpdateCounter = 0;
+    this.gpuUpdateInterval = 5;
   }
 
   /**
@@ -265,6 +300,185 @@ export class ProfilingOverlay {
     return `${this.networkRtt} ms`;
   }
 
+  // ==================== Drag & Dock Methods ====================
+
+  /**
+   * Initialize drag handling on the overlay header
+   */
+  initDragging() {
+    if (!this.container) return;
+
+    const header = this.container.querySelector('.pac-overlay-header');
+    if (!header) return;
+
+    header.addEventListener('mousedown', (e) => {
+      // Don't start drag if clicking close button
+      if (e.target.classList.contains('pac-overlay-close')) return;
+
+      this.isDragging = true;
+      this.dragStart = { x: e.clientX, y: e.clientY };
+
+      // Get current position
+      const rect = this.container.getBoundingClientRect();
+      this.dragStartPos = { left: rect.left, top: rect.top };
+
+      // Switch to absolute positioning for dragging
+      this.container.style.left = `${rect.left}px`;
+      this.container.style.top = `${rect.top}px`;
+      this.container.style.right = 'auto';
+      this.container.style.bottom = 'auto';
+
+      // Add dragging class for visual feedback
+      this.container.classList.add('dragging');
+
+      // Listen for mouse events on document
+      document.addEventListener('mousemove', this._onMouseMove);
+      document.addEventListener('mouseup', this._onMouseUp);
+
+      e.preventDefault();
+    });
+  }
+
+  /**
+   * Handle mouse move during drag
+   * @param {MouseEvent} e
+   */
+  _handleMouseMove(e) {
+    if (!this.isDragging || !this.container) return;
+
+    const dx = e.clientX - this.dragStart.x;
+    const dy = e.clientY - this.dragStart.y;
+
+    let newLeft = this.dragStartPos.left + dx;
+    let newTop = this.dragStartPos.top + dy;
+
+    // Constrain to viewport
+    const rect = this.container.getBoundingClientRect();
+    const maxX = window.innerWidth - rect.width;
+    const maxY = window.innerHeight - rect.height;
+
+    newLeft = Math.max(0, Math.min(newLeft, maxX));
+    newTop = Math.max(0, Math.min(newTop, maxY));
+
+    this.container.style.left = `${newLeft}px`;
+    this.container.style.top = `${newTop}px`;
+  }
+
+  /**
+   * Handle mouse up - end drag and snap to corner
+   * @param {MouseEvent} e
+   */
+  _handleMouseUp(e) {
+    if (!this.isDragging) return;
+
+    this.isDragging = false;
+    this.container.classList.remove('dragging');
+
+    // Remove document listeners
+    document.removeEventListener('mousemove', this._onMouseMove);
+    document.removeEventListener('mouseup', this._onMouseUp);
+
+    // Snap to nearest corner
+    this.snapToCorner();
+
+    // Save position
+    this.savePosition();
+  }
+
+  /**
+   * Snap the overlay to the nearest corner
+   */
+  snapToCorner() {
+    if (!this.container) return;
+
+    const rect = this.container.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const midX = window.innerWidth / 2;
+    const midY = window.innerHeight / 2;
+
+    // Determine nearest corner
+    const isLeft = centerX < midX;
+    const isTop = centerY < midY;
+
+    this.currentDock = `${isTop ? 'top' : 'bottom'}-${isLeft ? 'left' : 'right'}`;
+
+    // Apply docked position with CSS
+    this.applyDockPosition(this.currentDock);
+
+    console.log(`[ProfilingOverlay] Docked to: ${this.currentDock}`);
+  }
+
+  /**
+   * Apply a dock position to the overlay
+   * @param {DockPosition} position
+   */
+  applyDockPosition(position) {
+    if (!this.container) return;
+
+    const margin = '10px';
+
+    // Reset all position properties
+    this.container.style.top = 'auto';
+    this.container.style.right = 'auto';
+    this.container.style.bottom = 'auto';
+    this.container.style.left = 'auto';
+
+    switch (position) {
+      case 'top-left':
+        this.container.style.top = margin;
+        this.container.style.left = margin;
+        break;
+      case 'top-right':
+        this.container.style.top = margin;
+        this.container.style.right = margin;
+        break;
+      case 'bottom-left':
+        this.container.style.bottom = margin;
+        this.container.style.left = margin;
+        break;
+      case 'bottom-right':
+        this.container.style.bottom = margin;
+        this.container.style.right = margin;
+        break;
+      default:
+        // Default to top-right
+        this.container.style.top = margin;
+        this.container.style.right = margin;
+    }
+
+    this.currentDock = position;
+  }
+
+  /**
+   * Save current dock position to localStorage
+   */
+  savePosition() {
+    try {
+      localStorage.setItem(OVERLAY_POSITION_KEY, this.currentDock);
+    } catch (err) {
+      console.warn('[ProfilingOverlay] Failed to save position:', err);
+    }
+  }
+
+  /**
+   * Load dock position from localStorage
+   * @returns {DockPosition}
+   */
+  loadPosition() {
+    try {
+      const saved = localStorage.getItem(OVERLAY_POSITION_KEY);
+      if (saved && ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(saved)) {
+        return saved;
+      }
+    } catch (err) {
+      console.warn('[ProfilingOverlay] Failed to load position:', err);
+    }
+    return 'top-right'; // Default
+  }
+
+  // ==================== Core Methods ====================
+
   /**
    * Initialize the overlay
    */
@@ -279,7 +493,15 @@ export class ProfilingOverlay {
     this.applyStyles();
 
     document.body.appendChild(this.container);
-    console.log('[ProfilingOverlay] Initialized');
+
+    // Initialize drag handling
+    this.initDragging();
+
+    // Load and apply saved position
+    this.currentDock = this.loadPosition();
+    this.applyDockPosition(this.currentDock);
+
+    console.log(`[ProfilingOverlay] Initialized (docked: ${this.currentDock})`);
   }
 
   /**
@@ -309,9 +531,21 @@ export class ProfilingOverlay {
           <span class="pac-label">CPU</span>
           <span class="pac-value">--%</span>
         </div>
+        <div class="pac-metric" id="pac-gpu">
+          <span class="pac-label">GPU</span>
+          <span class="pac-value">--%</span>
+        </div>
         <div class="pac-metric" id="pac-network">
           <span class="pac-label">RTT</span>
           <span class="pac-value">-- ms</span>
+        </div>
+        <div class="pac-metric" id="pac-bandwidth">
+          <span class="pac-label">Bandwidth</span>
+          <span class="pac-value">--</span>
+        </div>
+        <div class="pac-metric" id="pac-quality">
+          <span class="pac-label">Connection</span>
+          <span class="pac-value">--</span>
         </div>
         <div class="pac-graph-header">
           <span class="pac-graph-label" id="pac-graph-label">FPS History</span>
@@ -327,6 +561,10 @@ export class ProfilingOverlay {
         <div class="pac-metric" id="pac-dropped">
           <span class="pac-label">Dropped</span>
           <span class="pac-value">0</span>
+        </div>
+        <div class="pac-metric" id="pac-optimizer">
+          <span class="pac-label">Optimizer</span>
+          <span class="pac-value">--</span>
         </div>
       </div>
     `;
@@ -354,10 +592,18 @@ export class ProfilingOverlay {
         user-select: none;
         pointer-events: auto;
         display: none;
+        transition: top 0.15s ease-out, right 0.15s ease-out,
+                    bottom 0.15s ease-out, left 0.15s ease-out;
       }
 
       #pac-profiling-overlay.visible {
         display: block;
+      }
+
+      #pac-profiling-overlay.dragging {
+        transition: none;
+        opacity: 0.9;
+        box-shadow: 0 4px 20px rgba(0, 255, 0, 0.3);
       }
 
       .pac-overlay-header {
@@ -367,6 +613,11 @@ export class ProfilingOverlay {
         margin-bottom: 8px;
         padding-bottom: 4px;
         border-bottom: 1px solid rgba(0, 255, 0, 0.3);
+        cursor: move;
+      }
+
+      .pac-overlay-header:active {
+        cursor: grabbing;
       }
 
       .pac-overlay-title {
@@ -555,9 +806,35 @@ export class ProfilingOverlay {
       );
     }
 
-    // Update RTT with jitter display
-    await this.measureRtt();
-    this.updateMetric('pac-network', this.getRttDisplayString(), this.getRttClass(this.networkRtt));
+    // Update GPU stats (every 500ms for responsiveness without excessive IPC)
+    this.gpuUpdateCounter++;
+    if (this.gpuUpdateCounter >= this.gpuUpdateInterval) {
+      this.gpuUpdateCounter = 0;
+      const gpuStats = await tauriBridge.getGpuStats();
+      if (gpuStats) {
+        this.lastGpuStats = gpuStats;
+      }
+    }
+
+    // Display GPU stats
+    if (this.lastGpuStats) {
+      if (this.lastGpuStats.available) {
+        this.updateMetric(
+          'pac-gpu',
+          `${this.lastGpuStats.usage_percent.toFixed(1)}%`,
+          this.getGpuClass(this.lastGpuStats.usage_percent)
+        );
+      } else {
+        // GPU monitoring not available
+        this.updateMetric('pac-gpu', 'N/A', '');
+      }
+    }
+
+    // Update network metrics from NetworkMonitor
+    const netMetrics = networkMonitor.getMetrics();
+    this.updateMetric('pac-network', networkMonitor.getRttString(), this.getRttClass(netMetrics.rtt));
+    this.updateMetric('pac-bandwidth', netMetrics.bandwidthFormatted);
+    this.updateMetric('pac-quality', this.formatQuality(netMetrics.quality), this.getQualityClass(netMetrics.quality));
 
     // Update frame time percentiles
     if (frameMetrics.histogram) {
@@ -567,6 +844,25 @@ export class ProfilingOverlay {
 
     // Update dropped frames
     this.updateMetric('pac-dropped', `${frameMetrics.droppedFrames}`);
+
+    // Update elevation telemetry (less frequently to reduce IPC overhead)
+    this.telemetryUpdateCounter++;
+    if (this.telemetryUpdateCounter >= this.telemetryUpdateInterval) {
+      this.telemetryUpdateCounter = 0;
+      const telemetry = await tauriBridge.getElevationTelemetry();
+      if (telemetry) {
+        this.lastTelemetry = telemetry;
+      }
+    }
+
+    // Display telemetry
+    if (this.lastTelemetry) {
+      const mode = this.lastTelemetry.wmi_available ? 'WMI' : 'Poll';
+      const count = this.lastTelemetry.processes_elevated;
+      const active = this.lastTelemetry.is_active;
+      const statusClass = active ? 'good' : 'warning';
+      this.updateMetric('pac-optimizer', `${mode} (${count})`, statusClass);
+    }
 
     // Update graph label based on mode
     const graphLabel = this.container.querySelector('#pac-graph-label');
@@ -758,6 +1054,17 @@ export class ProfilingOverlay {
   }
 
   /**
+   * Get CSS class for GPU usage
+   * @param {number} gpu
+   * @returns {string}
+   */
+  getGpuClass(gpu) {
+    if (gpu <= 60) return 'good';
+    if (gpu <= 85) return 'warning';
+    return 'bad';
+  }
+
+  /**
    * Get CSS class for RTT value
    * @param {number} rtt
    * @returns {string}
@@ -770,15 +1077,67 @@ export class ProfilingOverlay {
   }
 
   /**
+   * Format connection quality for display
+   * @param {'good' | 'fair' | 'poor' | 'unknown'} quality
+   * @returns {string}
+   */
+  formatQuality(quality) {
+    switch (quality) {
+      case 'good': return 'Good';
+      case 'fair': return 'Fair';
+      case 'poor': return 'Poor';
+      default: return '--';
+    }
+  }
+
+  /**
+   * Get CSS class for connection quality
+   * @param {'good' | 'fair' | 'poor' | 'unknown'} quality
+   * @returns {string}
+   */
+  getQualityClass(quality) {
+    switch (quality) {
+      case 'good': return 'good';
+      case 'fair': return 'warning';
+      case 'poor': return 'bad';
+      default: return '';
+    }
+  }
+
+  /**
    * Destroy the overlay
    */
   destroy() {
     this.stopUpdating();
+
+    // Clean up drag event listeners
+    document.removeEventListener('mousemove', this._onMouseMove);
+    document.removeEventListener('mouseup', this._onMouseUp);
+
     if (this.container) {
       this.container.remove();
       this.container = null;
     }
     delete window.__PAC_OVERLAY__;
+  }
+
+  /**
+   * Get current dock position (for debugging/settings UI)
+   * @returns {DockPosition}
+   */
+  getDockPosition() {
+    return this.currentDock;
+  }
+
+  /**
+   * Manually set dock position
+   * @param {DockPosition} position
+   */
+  setDockPosition(position) {
+    if (['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(position)) {
+      this.applyDockPosition(position);
+      this.savePosition();
+    }
   }
 }
 

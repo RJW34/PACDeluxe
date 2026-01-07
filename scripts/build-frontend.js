@@ -7,6 +7,7 @@
  */
 
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -76,14 +77,25 @@ async function main() {
     cpSync(join(clientDist, 'sw.js'), join(DIST_DIR, 'sw.js'));
   }
 
+  // Calculate build version hash from the game bundle
+  // This is used by the asset cache to detect version changes
+  const jsContent = readFileSync(join(DIST_DIR, 'index.js'));
+  const cssContent = readFileSync(join(DIST_DIR, 'index.css'));
+  const buildVersion = createHash('sha256')
+    .update(jsContent)
+    .update(cssContent)
+    .digest('hex')
+    .substring(0, 12);
+  log(`Build version: ${buildVersion}`);
+
   // Create index.html with performance overlay
   log('Creating index.html with overlay...');
-  createIndexHtml();
+  createIndexHtml(buildVersion);
 
   log('Build complete! Output: ' + DIST_DIR);
 }
 
-function createIndexHtml() {
+function createIndexHtml(buildVersion) {
   const html = `<!DOCTYPE html>
 <html lang="en" translate="no">
 <head>
@@ -92,6 +104,8 @@ function createIndexHtml() {
   <link rel="icon" href="assets/ui/favicon.ico" />
   <title>PACDeluxe</title>
   <link rel="stylesheet" type="text/css" href="index.css" />
+  <!-- PACDeluxe build version for cache invalidation -->
+  <script>window.__PAC_BUILD_VERSION__="${buildVersion}";window.__PAC_BUILD_TIME__="${new Date().toISOString()}";</script>
   <script src="index.js" defer></script>
 </head>
 <body>
