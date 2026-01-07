@@ -42,6 +42,58 @@ const OVERLAY_SCRIPT: &str = r#"
         });
         console.log('[PACDeluxe] Context menu disabled');
 
+        // === TOOLTIP & HOVER PERFORMANCE OPTIMIZATIONS ===
+        // Game uses react-tooltip which can lag on hover due to positioning recalculations
+        // These CSS optimizations force GPU acceleration and reduce layout thrashing
+        const perfStyles = document.createElement('style');
+        perfStyles.id = 'pac-perf-styles';
+        perfStyles.textContent = `
+            /* GPU-accelerate react-tooltip for smoother show/hide */
+            .react-tooltip {
+                transform: translateZ(0) !important;
+                will-change: opacity, transform !important;
+                contain: layout style paint !important;
+                backface-visibility: hidden !important;
+            }
+
+            /* Optimize any element with tooltip data attribute */
+            [data-tooltip-id] {
+                will-change: auto;
+            }
+            [data-tooltip-id]:hover {
+                will-change: contents;
+            }
+
+            /* GPU-accelerate game detail popups and menus */
+            /* Note: game-items-proposition and game-pokemons-proposition excluded -
+               transform creates stacking context that breaks absolute positioning of choice menus */
+            .game-pokemon-detail,
+            .game-player-detail,
+            .my-box,
+            .nes-container {
+                transform: translateZ(0);
+                backface-visibility: hidden;
+            }
+
+            /* Optimize synergy and item displays that show on hover */
+            .synergy-detail,
+            .item-detail,
+            .pokemon-detail {
+                contain: layout style paint;
+                will-change: opacity, visibility;
+            }
+
+
+            /* Optimize filters that run on hover (grayscale, contrast, etc) */
+            [class*="-portrait-hint"],
+            [class*="-locked"] {
+                transform: translateZ(0);
+                backface-visibility: hidden;
+            }
+        `;
+        document.head.appendChild(perfStyles);
+        console.log('[PACDeluxe] Tooltip performance optimizations applied');
+
         // Remove any existing overlay (from HTML template)
         const existingOverlay = document.getElementById('pac-perf');
         if (existingOverlay) existingOverlay.remove();
