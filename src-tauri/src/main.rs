@@ -27,10 +27,20 @@ const OVERLAY_SCRIPT: &str = r#"
 
         // === SCROLLBAR FIX ===
         // Fix 100vw overflow causing unwanted scrollbar on pack/booster screen
+        // Only hide horizontal overflow to preserve vertical scrolling (needed for tier list maker)
         const scrollbarFix = document.createElement('style');
-        scrollbarFix.textContent = 'html { overflow: hidden !important; }';
+        scrollbarFix.textContent = 'html { overflow-x: hidden !important; }';
         document.head.appendChild(scrollbarFix);
-        console.log('[PACDeluxe] Scrollbar fix applied');
+        console.log('[PACDeluxe] Scrollbar fix applied (horizontal only)');
+
+        // === CONTEXT MENU FIX ===
+        // Disable default WebView2 context menu to prevent interference with game UI
+        // (Tier list maker and other features use mouse events that conflict with context menu)
+        document.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            return false;
+        });
+        console.log('[PACDeluxe] Context menu disabled');
 
         // Remove any existing overlay (from HTML template)
         const existingOverlay = document.getElementById('pac-perf');
@@ -239,6 +249,9 @@ fn main() {
             .center()
             .focused(true)
             .visible(true)
+            // Required for HTML5 drag & drop to work in WebView2 on Windows
+            // (Tauri's default handler intercepts drag events, blocking tier list maker etc.)
+            .disable_drag_drop_handler()
             .on_page_load(|webview, _payload| {
                 if let Err(e) = webview.eval(OVERLAY_SCRIPT) {
                     tracing::warn!("Failed to inject overlay script: {}", e);
