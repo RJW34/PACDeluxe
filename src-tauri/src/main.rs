@@ -118,6 +118,102 @@ const OVERLAY_SCRIPT: &str = r#"
         });
         console.log('[PACDeluxe] Context menu disabled');
 
+        // === ASSET CACHE WITH VERSION CHECK ===
+        // Intercepts fetch() for static assets (images, JSON, audio)
+        // Clears cache when game version changes
+        (function() {
+            const CACHE_VERSION_KEY = '__pac_cache_version__';
+            const CACHE_ASSETS_KEY = '__pac_discovered_assets__';
+            const currentVersion = window.__PAC_BUILD_VERSION__ || 'unknown';
+            const storedVersion = localStorage.getItem(CACHE_VERSION_KEY);
+
+            // Version mismatch - clear stale data
+            if (storedVersion && storedVersion !== currentVersion) {
+                console.log('[PACDeluxe] Version changed (' + storedVersion + ' -> ' + currentVersion + '), clearing cache');
+                localStorage.removeItem(CACHE_ASSETS_KEY);
+            }
+            localStorage.setItem(CACHE_VERSION_KEY, currentVersion);
+
+            // Patterns for cacheable assets
+            const cacheablePatterns = [
+                /\.(png|jpg|jpeg|gif|webp|svg)$/i,
+                /\.(json)$/i,
+                /\.(mp3|ogg|wav|m4a)$/i,
+                /\.(woff|woff2|ttf|otf)$/i,
+                /\/assets\//i,
+            ];
+            const neverCachePatterns = [
+                /\/api\//i, /firestore/i, /firebase/i, /colyseus/i, /socket/i, /\?/
+            ];
+
+            function shouldCache(url) {
+                for (const p of neverCachePatterns) if (p.test(url)) return false;
+                for (const p of cacheablePatterns) if (p.test(url)) return true;
+                return false;
+            }
+
+            // In-memory cache (256MB limit)
+            const cache = new Map();
+            let cacheSize = 0;
+            const maxSize = 256 * 1024 * 1024;
+
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async (input, init) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const method = init?.method?.toUpperCase() || 'GET';
+
+                if (method !== 'GET' || !shouldCache(url)) {
+                    return originalFetch(input, init);
+                }
+
+                // Check cache
+                if (cache.has(url)) {
+                    return cache.get(url).clone();
+                }
+
+                // Fetch and cache
+                const response = await originalFetch(input, init);
+                if (response.ok) {
+                    const size = parseInt(response.headers.get('content-length') || '50000', 10);
+                    if (cacheSize + size <= maxSize) {
+                        cache.set(url, response.clone());
+                        cacheSize += size;
+                    }
+                }
+                return response;
+            };
+
+            // Record discovered assets after game loads (for future prewarm)
+            setTimeout(() => {
+                const urls = Array.from(cache.keys()).slice(0, 500);
+                if (urls.length > 0) {
+                    localStorage.setItem(CACHE_ASSETS_KEY, JSON.stringify(urls));
+                    console.log('[PACDeluxe] Recorded ' + urls.length + ' assets for prewarm');
+                }
+            }, 30000);
+
+            // Auto-prewarm from previous session
+            const savedAssets = localStorage.getItem(CACHE_ASSETS_KEY);
+            if (savedAssets && storedVersion === currentVersion) {
+                try {
+                    const urls = JSON.parse(savedAssets);
+                    console.log('[PACDeluxe] Prewarming ' + urls.length + ' cached assets');
+                    let i = 0;
+                    function prewarmNext() {
+                        if (i >= urls.length || i >= 50) return; // Limit to 50
+                        const url = urls[i++];
+                        if (!cache.has(url)) {
+                            fetch(url).catch(() => {});
+                        }
+                        setTimeout(prewarmNext, 100); // Rate limit
+                    }
+                    setTimeout(prewarmNext, 2000); // Start after 2s
+                } catch(e) {}
+            }
+
+            console.log('[PACDeluxe] Asset cache initialized (v' + currentVersion + ')');
+        })();
+
         // === TOOLTIP & HOVER PERFORMANCE OPTIMIZATIONS ===
         // Game uses react-tooltip which can lag on hover due to positioning recalculations
         // These CSS optimizations force GPU acceleration and reduce layout thrashing
@@ -168,6 +264,7 @@ const OVERLAY_SCRIPT: &str = r#"
                 transform: translateY(-25px) !important;
             }
         `;
+
         document.head.appendChild(perfStyles);
         console.log('[PACDeluxe] Tooltip performance optimizations applied');
 
