@@ -93,13 +93,40 @@ const OVERLAY_SCRIPT: &str = r#"
             return;
         }
 
-        // === SCROLLBAR FIX ===
-        // Fix 100vw overflow causing unwanted scrollbar on pack/booster screen
-        // Only hide horizontal overflow to preserve vertical scrolling (needed for tier list maker)
-        const scrollbarFix = document.createElement('style');
-        scrollbarFix.textContent = 'html { overflow-x: hidden !important; }';
-        document.head.appendChild(scrollbarFix);
-        console.log('[PACDeluxe] Scrollbar fix applied (horizontal only)');
+        // === VIEWPORT & SCROLLBAR FIX ===
+        // Fix viewport issues in WebView2 that differ from Chrome browser behavior
+        // - overflow-x: hidden fixes 100vw causing unwanted horizontal scrollbar
+        // - height: 100% ensures proper viewport height calculation (fixes popup clipping on 1080p)
+        const viewportFix = document.createElement('style');
+        viewportFix.textContent = `
+            html, body {
+                height: 100% !important;
+                overflow-x: hidden !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+        `;
+        document.head.appendChild(viewportFix);
+        console.log('[PACDeluxe] Viewport fix applied');
+
+        // === DPI SCALING COMPENSATION ===
+        // Detect Windows display scaling and apply inverse zoom to normalize to 100%
+        // This fixes UI elements appearing too large on scaled displays (e.g., 125%, 150%)
+        const dpiScale = window.devicePixelRatio || 1;
+        if (dpiScale > 1.01) { // Only apply if scaling detected (with small tolerance)
+            const inverseZoom = 1 / dpiScale;
+            const scalingFix = document.createElement('style');
+            scalingFix.id = 'pac-dpi-fix';
+            scalingFix.textContent = `
+                body {
+                    zoom: ${inverseZoom} !important;
+                }
+            `;
+            document.head.appendChild(scalingFix);
+            console.log('[PACDeluxe] DPI scaling compensation applied: ' + Math.round(dpiScale * 100) + '% -> zoom: ' + inverseZoom.toFixed(3));
+        } else {
+            console.log('[PACDeluxe] DPI scaling: 100% (no compensation needed)');
+        }
 
         // === CONTEXT MENU FIX ===
         // Disable default WebView2 context menu to prevent interference with game UI
@@ -133,12 +160,9 @@ const OVERLAY_SCRIPT: &str = r#"
             }
 
             /* GPU-accelerate game detail popups and menus */
-            /* Note: game-items-proposition and game-pokemons-proposition excluded -
-               transform creates stacking context that breaks absolute positioning of choice menus */
+            /* Note: Removed .my-box and .nes-container - was causing Additional picks popup sizing issues */
             .game-pokemon-detail,
-            .game-player-detail,
-            .my-box,
-            .nes-container {
+            .game-player-detail {
                 transform: translateZ(0);
                 backface-visibility: hidden;
             }
@@ -147,16 +171,20 @@ const OVERLAY_SCRIPT: &str = r#"
             .synergy-detail,
             .item-detail,
             .pokemon-detail {
-                contain: layout style paint;
                 will-change: opacity, visibility;
             }
-
 
             /* Optimize filters that run on hover (grayscale, contrast, etc) */
             [class*="-portrait-hint"],
             [class*="-locked"] {
                 transform: translateZ(0);
                 backface-visibility: hidden;
+            }
+
+            /* Fix Additional Picks popup - shift up so bottom row is fully visible */
+            /* (This is an upstream bug we're fixing for PACDeluxe users) */
+            #game-additional-pokemons {
+                transform: translateY(-25px) !important;
             }
         `;
         document.head.appendChild(perfStyles);
