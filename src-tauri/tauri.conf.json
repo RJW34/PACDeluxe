@@ -32,6 +32,12 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/RJW34/PACDeluxe/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMxQzQzMUVBODEzNDhGNzQKUldSMGp6U0I2akhFTWI4b0p2bytlc1BJazBGUEdJT1NVd3Q3NDV6TVFtY05pZ2pjS2JqU01zTTUK"
     }
   }
 }
