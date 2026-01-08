@@ -109,25 +109,6 @@ const OVERLAY_SCRIPT: &str = r#"
         document.head.appendChild(viewportFix);
         console.log('[PACDeluxe] Viewport fix applied');
 
-        // === DPI SCALING COMPENSATION ===
-        // Detect Windows display scaling and apply inverse zoom to normalize to 100%
-        // This fixes UI elements appearing too large on scaled displays (e.g., 125%, 150%)
-        const dpiScale = window.devicePixelRatio || 1;
-        if (dpiScale > 1.01) { // Only apply if scaling detected (with small tolerance)
-            const inverseZoom = 1 / dpiScale;
-            const scalingFix = document.createElement('style');
-            scalingFix.id = 'pac-dpi-fix';
-            scalingFix.textContent = `
-                body {
-                    zoom: ${inverseZoom} !important;
-                }
-            `;
-            document.head.appendChild(scalingFix);
-            console.log('[PACDeluxe] DPI scaling compensation applied: ' + Math.round(dpiScale * 100) + '% -> zoom: ' + inverseZoom.toFixed(3));
-        } else {
-            console.log('[PACDeluxe] DPI scaling: 100% (no compensation needed)');
-        }
-
         // === CONTEXT MENU FIX ===
         // Disable default WebView2 context menu to prevent interference with game UI
         // (Tier list maker and other features use mouse events that conflict with context menu)
