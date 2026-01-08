@@ -45,7 +45,20 @@ jobs:
       - name: Build frontend
         run: npm run build:frontend
 
-      - name: Build Tauri app with updater
+      - name: Build Tauri app
+        run: npm run tauri:build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: List bundle files
+        run: |
+          echo "=== MSI bundle ==="
+          dir src-tauri\target\release\bundle\msi\
+          echo "=== NSIS bundle ==="
+          dir src-tauri\target\release\bundle\nsis\
+
+      - name: Upload release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,12 +71,4 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          args: --verbose
-
-      - name: Debug - List bundle files
-        if: always()
-        run: |
-          echo "=== MSI bundle ==="
-          dir src-tauri\target\release\bundle\msi\ || echo "MSI dir not found"
-          echo "=== NSIS bundle ==="
-          dir src-tauri\target\release\bundle\nsis\ || echo "NSIS dir not found"
+          tauriScript: echo "skip"
