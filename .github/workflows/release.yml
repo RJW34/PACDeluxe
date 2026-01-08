@@ -58,3 +58,12 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
+          args: --verbose
+
+      - name: Debug - List bundle files
+        if: always()
+        run: |
+          echo "=== MSI bundle ==="
+          dir src-tauri\target\release\bundle\msi\ || echo "MSI dir not found"
+          echo "=== NSIS bundle ==="
+          dir src-tauri\target\release\bundle\nsis\ || echo "NSIS dir not found"
