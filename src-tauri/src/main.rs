@@ -171,9 +171,15 @@ const OVERLAY_SCRIPT: &str = r#"
         document.head.appendChild(perfStyles);
         console.log('[PACDeluxe] Tooltip performance optimizations applied');
 
-        // Remove any existing overlay (from HTML template)
+        // Remove any existing overlay (from HTML template or previous injection)
         const existingOverlay = document.getElementById('pac-perf');
         if (existingOverlay) existingOverlay.remove();
+
+        // Prevent duplicate injection - if our overlay already exists, bail out
+        if (document.getElementById('pac-perf-rust')) {
+            console.log('[PACDeluxe] Overlay already exists, skipping duplicate injection');
+            return;
+        }
 
         // Create overlay element
         const overlay = document.createElement('div');
@@ -184,40 +190,155 @@ const OVERLAY_SCRIPT: &str = r#"
             <div>CPU: <span class="cpu-val">--</span>%</div>
             <div>GPU: <span class="gpu-val">--</span>%</div>
             <div>MEM: <span class="mem-val">--</span> GB</div>
+            <div>HZ: <span class="hz-val">--</span></div>
+            <div>RTT: <span class="rtt-val">--</span> ms</div>
             <div>HDR: <span class="hdr-val">--</span></div>
         `;
-        overlay.style.cssText = 'display:none;position:fixed;top:8px;right:8px;background:rgba(0,0,0,0.9);color:#0f0;font:12px/1.4 monospace;padding:10px 14px;border-radius:6px;z-index:99999;border:1px solid #0f04;min-width:140px;box-shadow:0 2px 10px rgba(0,0,0,0.5);';
+        overlay.style.cssText = 'display:none;position:fixed;top:8px;right:8px;background:rgba(0,0,0,0.9);color:#0f0;font:12px/1.4 monospace;padding:10px 14px;border-radius:6px;z-index:99999;border:1px solid #0f04;min-width:140px;box-shadow:0 2px 10px rgba(0,0,0,0.5);cursor:move;user-select:none;';
         document.body.appendChild(overlay);
+
+        // === OVERLAY DRAGGABLE/DOCKABLE ===
+        let isDragging = false;
+        let dragStartX = 0, dragStartY = 0, overlayStartX = 0, overlayStartY = 0;
+
+        overlay.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+            const rect = overlay.getBoundingClientRect();
+            overlayStartX = rect.left;
+            overlayStartY = rect.top;
+            overlay.style.right = 'auto';
+            overlay.style.bottom = 'auto';
+            overlay.style.left = rect.left + 'px';
+            overlay.style.top = rect.top + 'px';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - dragStartX;
+            const dy = e.clientY - dragStartY;
+            overlay.style.left = (overlayStartX + dx) + 'px';
+            overlay.style.top = (overlayStartY + dy) + 'px';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!isDragging) return;
+            isDragging = false;
+
+            // Keep position where user dropped it
+            const rect = overlay.getBoundingClientRect();
+
+            // Persist position as x,y coordinates
+            localStorage.setItem('pac_overlay_pos', JSON.stringify({
+                x: rect.left,
+                y: rect.top
+            }));
+        });
+
+        // Restore saved position on load
+        const savedPos = localStorage.getItem('pac_overlay_pos');
+        if (savedPos) {
+            try {
+                const pos = JSON.parse(savedPos);
+                overlay.style.right = 'auto';
+                overlay.style.bottom = 'auto';
+                overlay.style.left = pos.x + 'px';
+                overlay.style.top = pos.y + 'px';
+            } catch(e) {}
+        }
 
         // Store element references (not IDs)
         const fpsEl = overlay.querySelector('.fps-val');
         const cpuEl = overlay.querySelector('.cpu-val');
         const gpuEl = overlay.querySelector('.gpu-val');
         const memEl = overlay.querySelector('.mem-val');
+        const hzEl = overlay.querySelector('.hz-val');
+        const rttEl = overlay.querySelector('.rtt-val');
         const hdrEl = overlay.querySelector('.hdr-val');
 
-        let visible = false;
-        let frameCount = 0;
-        let lastTime = performance.now();
-        let fps = 0;
+        // === SETTINGS PERSISTENCE ===
+        let visible = localStorage.getItem('pac_overlay_visible') === 'true';
+        overlay.style.display = visible ? 'block' : 'none';
 
-        // FPS counter
-        function countFrame() {
-            frameCount++;
+        // === COMBINED FPS & REFRESH RATE MEASUREMENT ===
+        // Single rAF loop for both metrics to reduce overhead
+        let frameCount = 0;
+        let lastFpsTime = performance.now();
+        let lastFrameTime = performance.now();
+        let fps = 0;
+        let refreshRate = 0;
+        const frameTimes = [];
+
+        function measureFrame() {
             const now = performance.now();
-            if (now - lastTime >= 1000) {
-                fps = Math.round(frameCount * 1000 / (now - lastTime));
+
+            // FPS: count frames per second
+            frameCount++;
+            if (now - lastFpsTime >= 1000) {
+                fps = Math.round(frameCount * 1000 / (now - lastFpsTime));
                 frameCount = 0;
-                lastTime = now;
+                lastFpsTime = now;
             }
-            requestAnimationFrame(countFrame);
+
+            // HZ: measure frame deltas for refresh rate
+            const delta = now - lastFrameTime;
+            lastFrameTime = now;
+
+            if (delta > 0 && delta < 100) { // Sanity check
+                frameTimes.push(delta);
+                if (frameTimes.length > 60) frameTimes.shift();
+
+                if (frameTimes.length >= 30) {
+                    const avgDelta = frameTimes.reduce((a,b) => a+b, 0) / frameTimes.length;
+                    refreshRate = Math.round(1000 / avgDelta);
+                }
+            }
+
+            requestAnimationFrame(measureFrame);
         }
-        countFrame();
+        requestAnimationFrame(measureFrame);
+
+        // === NETWORK METRICS ===
+        let networkRtt = 0;
+        const rttSamples = [];
+
+        if (typeof PerformanceObserver !== 'undefined') {
+            const netObserver = new PerformanceObserver((list) => {
+                for (const entry of list.getEntries()) {
+                    // Filter for game traffic
+                    if (entry.name.includes('colyseus') ||
+                        entry.name.includes('pokemon-auto-chess') ||
+                        entry.name.includes('socket')) {
+
+                        const rtt = entry.responseEnd - entry.requestStart;
+                        if (rtt > 0 && rtt < 5000) {
+                            rttSamples.push(rtt);
+                            if (rttSamples.length > 20) rttSamples.shift();
+                            networkRtt = Math.round(
+                                rttSamples.reduce((a,b) => a+b, 0) / rttSamples.length
+                            );
+                        }
+                    }
+                }
+            });
+
+            try {
+                netObserver.observe({ entryTypes: ['resource'] });
+            } catch(e) {
+                console.log('[PACDeluxe] Network observer not available');
+            }
+        }
+
+        if (visible) setTimeout(() => { /* trigger initial update */ }, 100);
 
         // Update overlay using stored element references
         async function updateOverlay() {
             if (!visible) return;
             if (fpsEl) fpsEl.textContent = fps;
+            if (hzEl) hzEl.textContent = refreshRate;
+            if (rttEl) rttEl.textContent = networkRtt || '--';
 
             // Tauri v2: invoke is at window.__TAURI__.core.invoke
             const invoke = window.__TAURI__?.core?.invoke;
@@ -265,15 +386,29 @@ const OVERLAY_SCRIPT: &str = r#"
 
         // Toggle overlay with Ctrl+Shift+P
         // Toggle fullscreen with F11
+        // Toggle borderless windowed with Shift+F11
         document.addEventListener('keydown', async e => {
             if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p') {
                 e.preventDefault();
                 visible = !visible;
                 overlay.style.display = visible ? 'block' : 'none';
+                localStorage.setItem('pac_overlay_visible', visible);
                 if (visible) updateOverlay();
             }
-            // F11 for exclusive fullscreen
-            if (e.key === 'F11') {
+            // Shift+F11 for borderless windowed
+            if (e.shiftKey && e.key === 'F11') {
+                e.preventDefault();
+                if (window.__TAURI__) {
+                    try {
+                        const currentMode = await window.__TAURI__.core.invoke('get_window_mode');
+                        const newMode = currentMode === 'BorderlessWindowed' ? 'Windowed' : 'BorderlessWindowed';
+                        await window.__TAURI__.core.invoke('set_window_mode', { mode: newMode });
+                        console.log('[PACDeluxe] Window mode:', newMode);
+                    } catch(e) { console.error('[PACDeluxe] Borderless error:', e); }
+                }
+            }
+            // F11 for exclusive fullscreen (only if Shift not pressed)
+            else if (e.key === 'F11' && !e.shiftKey) {
                 e.preventDefault();
                 if (window.__TAURI__) {
                     try {
@@ -407,7 +542,7 @@ const OVERLAY_SCRIPT: &str = r#"
             }
         })();
 
-        console.log('[PACDeluxe] Ready - Ctrl+Shift+P: overlay, F11: fullscreen');
+        console.log('[PACDeluxe] Ready - Ctrl+Shift+P: overlay, F11: fullscreen, Shift+F11: borderless');
     }
     init();
 })();
@@ -604,6 +739,8 @@ fn main() {
             commands::get_webview_telemetry,
             commands::get_gpu_stats,
             commands::get_hdr_status,
+            commands::set_window_mode,
+            commands::get_window_mode,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run application");

@@ -8,9 +8,17 @@ use crate::performance::{
     GpuStats, get_gpu_stats as get_gpu_stats_impl,
     HdrInfo, get_hdr_info,
 };
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use tauri::{State, Manager, AppHandle};
 use tracing::{debug, warn};
+
+/// Window display mode
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum WindowMode {
+    Windowed,
+    Fullscreen,
+    BorderlessWindowed,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemInfo {
@@ -146,4 +154,61 @@ pub fn get_hdr_status() -> HdrInfo {
         info.supported, info.enabled, info.color_space, info.max_luminance
     );
     info
+}
+
+/// Set window display mode (windowed, fullscreen, or borderless)
+#[tauri::command]
+pub async fn set_window_mode(app: AppHandle, mode: WindowMode) -> Result<WindowMode, String> {
+    debug!("Setting window mode to {:?}", mode);
+
+    let window = app.get_webview_window("main")
+        .ok_or_else(|| {
+            warn!("Main window not found for window mode change");
+            "Main window not found".to_string()
+        })?;
+
+    match mode {
+        WindowMode::Windowed => {
+            window.set_fullscreen(false).map_err(|e| e.to_string())?;
+            window.set_decorations(true).map_err(|e| e.to_string())?;
+            debug!("Window mode set to Windowed");
+        }
+        WindowMode::Fullscreen => {
+            window.set_fullscreen(true).map_err(|e| e.to_string())?;
+            debug!("Window mode set to Fullscreen");
+        }
+        WindowMode::BorderlessWindowed => {
+            window.set_fullscreen(false).map_err(|e| e.to_string())?;
+            window.set_decorations(false).map_err(|e| e.to_string())?;
+            // Maximize to fill screen
+            window.maximize().map_err(|e| e.to_string())?;
+            debug!("Window mode set to BorderlessWindowed");
+        }
+    }
+
+    Ok(mode)
+}
+
+/// Get current window display mode
+#[tauri::command]
+pub async fn get_window_mode(app: AppHandle) -> Result<WindowMode, String> {
+    let window = app.get_webview_window("main")
+        .ok_or_else(|| {
+            warn!("Main window not found for window mode query");
+            "Main window not found".to_string()
+        })?;
+
+    let is_fullscreen = window.is_fullscreen().unwrap_or(false);
+    let is_decorated = window.is_decorated().unwrap_or(true);
+    let is_maximized = window.is_maximized().unwrap_or(false);
+
+    let mode = match (is_fullscreen, is_decorated, is_maximized) {
+        (true, _, _) => WindowMode::Fullscreen,
+        (false, false, true) => WindowMode::BorderlessWindowed,
+        _ => WindowMode::Windowed,
+    };
+
+    debug!("Current window mode: {:?} (fullscreen={}, decorated={}, maximized={})",
+           mode, is_fullscreen, is_decorated, is_maximized);
+    Ok(mode)
 }
