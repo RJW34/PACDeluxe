@@ -11,6 +11,74 @@ use tracing_subscriber::FmtSubscriber;
 use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::path::PathBuf;
+
+/// Clean up problematic files from old installations
+/// Runs on every startup to ensure clean state
+fn cleanup_old_installation() {
+    // Get the executable directory
+    let exe_dir = match std::env::current_exe() {
+        Ok(path) => path.parent().map(|p| p.to_path_buf()),
+        Err(_) => None,
+    };
+
+    // Get AppData directories
+    let local_appdata = std::env::var("LOCALAPPDATA").ok().map(PathBuf::from);
+    let appdata = std::env::var("APPDATA").ok().map(PathBuf::from);
+
+    let mut cleaned = Vec::new();
+
+    // List of known problematic files/directories to remove
+    // Add patterns here as issues are discovered
+    let problematic_patterns: Vec<(&str, Option<&PathBuf>)> = vec![
+        // Old cache files that may have incompatible formats
+        ("PACDeluxe/cache_v0", local_appdata.as_ref()),
+        ("PACDeluxe/old_config.json", appdata.as_ref()),
+        // Stale WebView2 data that can cause issues
+        ("PACDeluxe/EBWebView/stale_lock", local_appdata.as_ref()),
+    ];
+
+    for (pattern, base_dir) in problematic_patterns {
+        if let Some(base) = base_dir {
+            let full_path = base.join(pattern);
+            if full_path.exists() {
+                match if full_path.is_dir() {
+                    std::fs::remove_dir_all(&full_path)
+                } else {
+                    std::fs::remove_file(&full_path)
+                } {
+                    Ok(_) => {
+                        cleaned.push(full_path.display().to_string());
+                    }
+                    Err(e) => {
+                        warn!("Failed to clean up {}: {}", full_path.display(), e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for old DLLs in exe directory that shouldn't exist
+    if let Some(exe_path) = exe_dir {
+        let old_dlls = ["old_webview.dll", "deprecated_helper.dll"];
+        for dll in old_dlls {
+            let dll_path = exe_path.join(dll);
+            if dll_path.exists() {
+                if let Err(e) = std::fs::remove_file(&dll_path) {
+                    warn!("Failed to remove old DLL {}: {}", dll, e);
+                } else {
+                    cleaned.push(dll_path.display().to_string());
+                }
+            }
+        }
+    }
+
+    if !cleaned.is_empty() {
+        info!("Cleaned up {} old installation artifacts: {:?}", cleaned.len(), cleaned);
+    } else {
+        debug!("No old installation artifacts to clean up");
+    }
+}
 
 /// Counter for unique popup window labels
 static POPUP_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -344,6 +412,9 @@ fn main() {
     tracing::subscriber::set_global_default(subscriber).ok();
 
     info!("Starting PACDeluxe");
+
+    // Clean up any problematic files from old installations
+    cleanup_old_installation();
 
     // Apply system optimizations
     performance::apply_system_optimizations();

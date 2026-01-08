@@ -26,6 +26,10 @@
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
         "silent": true
+      },
+      "nsis": {
+        "installMode": "both",
+        "startMenuFolder": "PACDeluxe"
       }
     }
   },
