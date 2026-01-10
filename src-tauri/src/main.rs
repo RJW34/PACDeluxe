@@ -650,6 +650,7 @@ const OVERLAY_SCRIPT: &str = r#"
 
         // === AUTO-UPDATER ===
         // Check for updates on startup and show non-intrusive notification
+        // Uses custom Rust commands to avoid CSP issues with plugin IPC
         (async function checkForUpdates() {
             // Wait for Tauri to be fully initialized
             await new Promise(resolve => setTimeout(resolve, 5000));
@@ -661,38 +662,36 @@ const OVERLAY_SCRIPT: &str = r#"
             }
 
             try {
-                // Use the updater plugin
-                const { check } = await import('@tauri-apps/plugin-updater');
-                const update = await check();
+                // Check for updates using our custom Rust command
+                const update = await invoke('check_for_updates');
+                console.log('[PACDeluxe] Update check result:', update);
 
-                if (update) {
+                if (update && update.available) {
                     console.log('[PACDeluxe] Update available:', update.version);
 
                     // Create update notification banner
                     const banner = document.createElement('div');
                     banner.id = 'pac-update-banner';
-                    banner.innerHTML = `
-                        <span>🚀 PACDeluxe ${update.version} available!</span>
-                        <button id="pac-update-btn">Update Now</button>
-                        <button id="pac-update-dismiss">✕</button>
-                    `;
+                    banner.innerHTML = '<span>PACDeluxe v' + update.version + ' available!</span>' +
+                        '<button id="pac-update-btn">Update Now</button>' +
+                        '<button id="pac-update-dismiss">x</button>';
                     banner.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);background:linear-gradient(90deg,#1a5a1a,#2a7a2a);color:#fff;padding:8px 16px;border-radius:0 0 8px 8px;z-index:99998;font:13px/1.4 sans-serif;display:flex;align-items:center;gap:12px;box-shadow:0 2px 10px rgba(0,0,0,0.3);';
                     document.body.appendChild(banner);
 
                     // Update button handler
                     document.getElementById('pac-update-btn').onclick = async () => {
-                        banner.innerHTML = '<span>⏳ Downloading update...</span>';
+                        banner.innerHTML = '<span>Downloading update...</span>';
                         try {
-                            await update.downloadAndInstall();
-                            banner.innerHTML = '<span>✅ Update installed! Restarting...</span>';
-                            // Restart the app using process plugin
+                            // Download and install using our custom Rust command
+                            await invoke('install_update');
+                            banner.innerHTML = '<span>Update installed! Restarting...</span>';
+                            // Restart the app
                             setTimeout(async () => {
-                                const { relaunch } = await import('@tauri-apps/plugin-process');
-                                await relaunch();
+                                await invoke('restart_app');
                             }, 1500);
                         } catch (e) {
                             console.error('[PACDeluxe] Update failed:', e);
-                            banner.innerHTML = `<span>❌ Update failed: ${e.message}</span>`;
+                            banner.innerHTML = '<span>Update failed: ' + (e.message || e) + '</span>';
                             setTimeout(() => banner.remove(), 5000);
                         }
                     };
@@ -708,8 +707,8 @@ const OVERLAY_SCRIPT: &str = r#"
                     console.log('[PACDeluxe] App is up to date');
                 }
             } catch (e) {
-                // Silently fail - updater might not be configured yet
-                console.log('[PACDeluxe] Update check skipped:', e.message || e);
+                // Log the error for debugging
+                console.log('[PACDeluxe] Update check failed:', e.message || e);
             }
         })();
 
@@ -900,6 +899,9 @@ fn main() {
             let monitor = performance::PerformanceMonitor::new();
             app.manage(monitor);
 
+            // Initialize pending update state for updater
+            app.manage(commands::PendingUpdate(std::sync::Mutex::new(None)));
+
             info!("Application ready");
             Ok(())
         })
@@ -912,6 +914,9 @@ fn main() {
             commands::get_hdr_status,
             commands::set_window_mode,
             commands::get_window_mode,
+            commands::check_for_updates,
+            commands::install_update,
+            commands::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run application");

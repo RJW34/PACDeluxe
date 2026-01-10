@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-01-09
+
+### Fixed
+- Auto-updater now works correctly (was blocked by CSP in previous versions)
+- Users on v1.2.3+ will receive automatic update notifications
+
 ## [1.2.2] - 2026-01-09
 
 ### Improved
@@ -84,7 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auth popup doesn't auto-close after login
 - GPU monitoring not available (requires vendor-specific SDKs)
 
-[Unreleased]: https://github.com/RJW34/PACDeluxe/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/RJW34/PACDeluxe/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/RJW34/PACDeluxe/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/RJW34/PACDeluxe/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/RJW34/PACDeluxe/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/RJW34/PACDeluxe/compare/v1.1.2...v1.2.0

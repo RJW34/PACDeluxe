@@ -10,7 +10,9 @@ use crate::performance::{
 };
 use serde::{Serialize, Deserialize};
 use tauri::{State, Manager, AppHandle};
-use tracing::{debug, warn};
+use tauri_plugin_updater::UpdaterExt;
+use tracing::{debug, warn, info};
+use std::sync::Mutex;
 
 /// Window display mode
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -211,4 +213,87 @@ pub async fn get_window_mode(app: AppHandle) -> Result<WindowMode, String> {
     debug!("Current window mode: {:?} (fullscreen={}, decorated={}, maximized={})",
            mode, is_fullscreen, is_decorated, is_maximized);
     Ok(mode)
+}
+
+/// Update info returned to JavaScript
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateInfo {
+    pub available: bool,
+    pub version: Option<String>,
+    pub body: Option<String>,
+}
+
+/// Global state to store pending update for download
+pub struct PendingUpdate(pub Mutex<Option<tauri_plugin_updater::Update>>);
+
+/// Check for available updates
+/// Returns update info if available, or indicates no update needed
+#[tauri::command]
+pub async fn check_for_updates(
+    app: AppHandle,
+    pending: State<'_, PendingUpdate>,
+) -> Result<UpdateInfo, String> {
+    info!("Checking for updates...");
+
+    let updater = app.updater_builder().build().map_err(|e| {
+        warn!("Failed to build updater: {}", e);
+        e.to_string()
+    })?;
+
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let version = update.version.clone();
+            let body = update.body.clone();
+            info!("Update available: v{}", version);
+
+            // Store the update for later download
+            *pending.0.lock().unwrap() = Some(update);
+
+            Ok(UpdateInfo {
+                available: true,
+                version: Some(version),
+                body,
+            })
+        }
+        Ok(None) => {
+            info!("App is up to date");
+            Ok(UpdateInfo {
+                available: false,
+                version: None,
+                body: None,
+            })
+        }
+        Err(e) => {
+            warn!("Update check failed: {}", e);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Download and install the pending update
+#[tauri::command]
+pub async fn install_update(
+    pending: State<'_, PendingUpdate>,
+) -> Result<(), String> {
+    info!("Installing update...");
+
+    let update = pending.0.lock().unwrap().take()
+        .ok_or_else(|| "No pending update to install".to_string())?;
+
+    // Download and install
+    update.download_and_install(|_chunk, _total| {}, || {}).await
+        .map_err(|e| {
+            warn!("Update installation failed: {}", e);
+            e.to_string()
+        })?;
+
+    info!("Update installed successfully");
+    Ok(())
+}
+
+/// Restart the application
+#[tauri::command]
+pub async fn restart_app(app: AppHandle) -> Result<(), String> {
+    info!("Restarting application...");
+    app.restart();
 }
