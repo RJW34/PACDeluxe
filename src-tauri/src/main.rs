@@ -93,21 +93,45 @@ const OVERLAY_SCRIPT: &str = r#"
             return;
         }
 
-        // === VIEWPORT & SCROLLBAR FIX ===
-        // Fix viewport issues in WebView2 that differ from Chrome browser behavior
-        // - overflow-x: hidden fixes 100vw causing unwanted horizontal scrollbar
-        // - height: 100% ensures proper viewport height calculation (fixes popup clipping on 1080p)
-        const viewportFix = document.createElement('style');
-        viewportFix.textContent = `
+        // === SCROLLBAR BUG FIX ===
+        // Upstream bug: body/root use width:100vw which includes scrollbar width,
+        // causing horizontal overflow and an unnecessary vertical scrollbar
+        // Fix: hide overflow on html and body, use 100% instead of 100vw
+        const scrollbarFix = document.createElement('style');
+        scrollbarFix.textContent = `
             html, body {
-                height: 100% !important;
+                overflow: hidden !important;
                 overflow-x: hidden !important;
-                margin: 0 !important;
-                padding: 0 !important;
+                overflow-y: auto !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            body > div, #root {
+                max-width: 100% !important;
+                overflow-x: hidden !important;
+            }
+            /* Hide scrollbar on booster popup */
+            #boosters-page {
+                scrollbar-width: none !important;
+            }
+            #boosters-page::-webkit-scrollbar {
+                display: none !important;
+            }
+            dialog:has(#boosters-page) {
+                scrollbar-width: none !important;
+            }
+            dialog:has(#boosters-page)::-webkit-scrollbar {
+                display: none !important;
+            }
+            .modal-body:has(#boosters-page) {
+                scrollbar-width: none !important;
+            }
+            .modal-body:has(#boosters-page)::-webkit-scrollbar {
+                display: none !important;
             }
         `;
-        document.head.appendChild(viewportFix);
-        console.log('[PACDeluxe] Viewport fix applied');
+        document.head.appendChild(scrollbarFix);
+        console.log('[PACDeluxe] Scrollbar fix applied');
 
         // === CONTEXT MENU FIX ===
         // Disable default WebView2 context menu to prevent interference with game UI
@@ -572,6 +596,56 @@ const OVERLAY_SCRIPT: &str = r#"
             }, 1000);
 
             console.log('[PACDeluxe] Session recovery monitor active');
+        })();
+
+        // === DYNAMIC BOOSTER BUTTON TEXT ===
+        // Changes the "Open Booster" button text to "Flip All" when cards are unflipped
+        // This provides clearer UX by showing what the button will actually do
+        (function dynamicBoosterButton() {
+            let lastCheck = 0;
+
+            function updateButtonText() {
+                const boostersPage = document.getElementById('boosters-page');
+                if (!boostersPage) return;
+
+                const openBoosterBtn = boostersPage.querySelector('button.bubbly');
+                if (!openBoosterBtn) return;
+
+                // Check for unflipped cards (cards without the 'flipped' class)
+                const boosterCards = boostersPage.querySelectorAll('.booster-card');
+                const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
+
+                // If there are cards and some are unflipped, show "Flip All"
+                if (boosterCards.length > 0 && unflippedCards.length > 0) {
+                    if (!openBoosterBtn.textContent.includes('Flip')) {
+                        openBoosterBtn.textContent = 'Flip All';
+                        openBoosterBtn.classList.add('blue');
+                        openBoosterBtn.disabled = false;
+                    }
+                } else {
+                    // Reset to original text when no unflipped cards
+                    if (openBoosterBtn.textContent.includes('Flip')) {
+                        openBoosterBtn.textContent = 'Open a Booster';
+                    }
+                }
+            }
+
+            // Check periodically
+            setInterval(() => {
+                const now = Date.now();
+                if (now - lastCheck < 200) return;
+                lastCheck = now;
+                updateButtonText();
+            }, 200);
+
+            // Also observe DOM changes for immediate response
+            new MutationObserver(updateButtonText).observe(document.body, {
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['class']
+            });
+
+            console.log('[PACDeluxe] Dynamic booster button text ready');
         })();
 
         // === AUTO-UPDATER ===
