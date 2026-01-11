@@ -96,38 +96,21 @@ const OVERLAY_SCRIPT: &str = r#"
         // === SCROLLBAR BUG FIX ===
         // Upstream bug: body/root use width:100vw which includes scrollbar width,
         // causing horizontal overflow and an unnecessary vertical scrollbar
-        // Fix: hide overflow on html and body, use 100% instead of 100vw
+        // Fix: hide overflow and scrollbars globally
         const scrollbarFix = document.createElement('style');
         scrollbarFix.textContent = `
             html, body {
                 overflow: hidden !important;
-                overflow-x: hidden !important;
-                overflow-y: auto !important;
                 width: 100% !important;
                 max-width: 100% !important;
+                scrollbar-width: none !important;
+            }
+            html::-webkit-scrollbar, body::-webkit-scrollbar {
+                display: none !important;
             }
             body > div, #root {
                 max-width: 100% !important;
                 overflow-x: hidden !important;
-            }
-            /* Hide scrollbar on booster popup */
-            #boosters-page {
-                scrollbar-width: none !important;
-            }
-            #boosters-page::-webkit-scrollbar {
-                display: none !important;
-            }
-            dialog:has(#boosters-page) {
-                scrollbar-width: none !important;
-            }
-            dialog:has(#boosters-page)::-webkit-scrollbar {
-                display: none !important;
-            }
-            .modal-body:has(#boosters-page) {
-                scrollbar-width: none !important;
-            }
-            .modal-body:has(#boosters-page)::-webkit-scrollbar {
-                display: none !important;
             }
         `;
         document.head.appendChild(scrollbarFix);
@@ -617,11 +600,9 @@ const OVERLAY_SCRIPT: &str = r#"
 
                 // If there are cards and some are unflipped, show "Flip All"
                 if (boosterCards.length > 0 && unflippedCards.length > 0) {
-                    if (!openBoosterBtn.textContent.includes('Flip')) {
-                        openBoosterBtn.textContent = 'Flip All';
-                        openBoosterBtn.classList.add('blue');
-                        openBoosterBtn.disabled = false;
-                    }
+                    openBoosterBtn.textContent = 'Flip All';
+                    openBoosterBtn.classList.add('blue');
+                    openBoosterBtn.disabled = false; // Always force enabled - React keeps disabling it
                 } else {
                     // Reset to original text when no unflipped cards
                     if (openBoosterBtn.textContent.includes('Flip')) {
