@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-01-13
+
+### Fixed
+- Properly fixed unwanted scrollbar appearing during gameplay (global fix)
+
 ## [1.2.4] - 2026-01-10
 
 ### Fixed
-- Removed unwanted scrollbar that appeared during gameplay
+- Removed unwanted scrollbar that appeared during gameplay (partial fix)
+- Fixed Flip All button staying disabled when no packs left
 
 ## [1.2.3] - 2026-01-09
 
@@ -95,7 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auth popup doesn't auto-close after login
 - GPU monitoring not available (requires vendor-specific SDKs)
 
-[Unreleased]: https://github.com/RJW34/PACDeluxe/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/RJW34/PACDeluxe/compare/v1.2.5...HEAD
+[1.2.5]: https://github.com/RJW34/PACDeluxe/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/RJW34/PACDeluxe/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/RJW34/PACDeluxe/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/RJW34/PACDeluxe/compare/v1.2.1...v1.2.2

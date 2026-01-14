@@ -94,19 +94,23 @@ const OVERLAY_SCRIPT: &str = r#"
         }
 
         // === SCROLLBAR BUG FIX ===
-        // Upstream bug: body/root use width:100vw which includes scrollbar width,
-        // causing horizontal overflow and an unnecessary vertical scrollbar
-        // Fix: hide overflow and scrollbars globally
+        // Hide all scrollbars globally - game doesn't need visible scrollbars
         const scrollbarFix = document.createElement('style');
         scrollbarFix.textContent = `
+            /* Hide all scrollbars globally */
+            * {
+                scrollbar-width: none !important;
+                -ms-overflow-style: none !important;
+            }
+            *::-webkit-scrollbar {
+                display: none !important;
+                width: 0 !important;
+                height: 0 !important;
+            }
             html, body {
                 overflow: hidden !important;
                 width: 100% !important;
                 max-width: 100% !important;
-                scrollbar-width: none !important;
-            }
-            html::-webkit-scrollbar, body::-webkit-scrollbar {
-                display: none !important;
             }
             body > div, #root {
                 max-width: 100% !important;
