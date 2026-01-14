@@ -589,9 +589,11 @@ const OVERLAY_SCRIPT: &str = r#"
         // Changes the "Open Booster" button text to "Flip All" when cards are unflipped
         // This provides clearer UX by showing what the button will actually do
         (function dynamicBoosterButton() {
-            let lastCheck = 0;
+            let isUpdating = false;
 
             function updateButtonText() {
+                if (isUpdating) return; // Prevent re-entry
+
                 const boostersPage = document.getElementById('boosters-page');
                 if (!boostersPage) return;
 
@@ -603,32 +605,30 @@ const OVERLAY_SCRIPT: &str = r#"
                 const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
 
                 // If there are cards and some are unflipped, show "Flip All"
-                if (boosterCards.length > 0 && unflippedCards.length > 0) {
+                const shouldShowFlipAll = boosterCards.length > 0 && unflippedCards.length > 0;
+                const currentlyShowsFlipAll = openBoosterBtn.textContent === 'Flip All';
+
+                // Only modify DOM if state actually changed (prevents feedback loops)
+                if (shouldShowFlipAll && !currentlyShowsFlipAll) {
+                    isUpdating = true;
                     openBoosterBtn.textContent = 'Flip All';
-                    openBoosterBtn.classList.add('blue');
-                    openBoosterBtn.disabled = false; // Always force enabled - React keeps disabling it
-                } else {
-                    // Reset to original text when no unflipped cards
-                    if (openBoosterBtn.textContent.includes('Flip')) {
-                        openBoosterBtn.textContent = 'Open a Booster';
+                    if (!openBoosterBtn.classList.contains('blue')) {
+                        openBoosterBtn.classList.add('blue');
                     }
+                    openBoosterBtn.disabled = false;
+                    isUpdating = false;
+                } else if (!shouldShowFlipAll && currentlyShowsFlipAll) {
+                    isUpdating = true;
+                    openBoosterBtn.textContent = 'Open a Booster';
+                    isUpdating = false;
+                } else if (shouldShowFlipAll && openBoosterBtn.disabled) {
+                    // Just fix disabled state without other changes
+                    openBoosterBtn.disabled = false;
                 }
             }
 
-            // Check periodically
-            setInterval(() => {
-                const now = Date.now();
-                if (now - lastCheck < 200) return;
-                lastCheck = now;
-                updateButtonText();
-            }, 200);
-
-            // Also observe DOM changes for immediate response
-            new MutationObserver(updateButtonText).observe(document.body, {
-                subtree: true,
-                attributes: true,
-                attributeFilter: ['class']
-            });
+            // Check periodically (no MutationObserver - it causes feedback loops)
+            setInterval(updateButtonText, 250);
 
             console.log('[PACDeluxe] Dynamic booster button text ready');
         })();
