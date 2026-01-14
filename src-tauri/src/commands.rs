@@ -112,6 +112,7 @@ pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
             e.to_string()
         })?;
 
+    // Simply toggle fullscreen state
     window.set_fullscreen(!is_fullscreen)
         .map_err(|e| {
             warn!("Failed to set fullscreen to {}: {}", !is_fullscreen, e);
@@ -172,7 +173,9 @@ pub async fn set_window_mode(app: AppHandle, mode: WindowMode) -> Result<WindowM
     match mode {
         WindowMode::Windowed => {
             window.set_fullscreen(false).map_err(|e| e.to_string())?;
+            // Restore decorations first, then unmaximize
             window.set_decorations(true).map_err(|e| e.to_string())?;
+            window.unmaximize().map_err(|e| e.to_string())?;
             debug!("Window mode set to Windowed");
         }
         WindowMode::Fullscreen => {
@@ -181,8 +184,8 @@ pub async fn set_window_mode(app: AppHandle, mode: WindowMode) -> Result<WindowM
         }
         WindowMode::BorderlessWindowed => {
             window.set_fullscreen(false).map_err(|e| e.to_string())?;
+            // Remove decorations and maximize to fill screen
             window.set_decorations(false).map_err(|e| e.to_string())?;
-            // Maximize to fill screen
             window.maximize().map_err(|e| e.to_string())?;
             debug!("Window mode set to BorderlessWindowed");
         }

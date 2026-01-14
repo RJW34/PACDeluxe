@@ -274,10 +274,53 @@ const OVERLAY_SCRIPT: &str = r#"
             #game-additional-pokemons {
                 transform: translateY(-25px) !important;
             }
+
+            /* Force crisp pixel-art rendering on pokemon portraits */
+            /* Prevents color bleeding from bilinear interpolation on scaled sprites */
+            #game-additional-pokemons img,
+            .game-players-list img,
+            .game-player-portrait img,
+            [class*="portrait"] img,
+            [class*="avatar"] img {
+                image-rendering: pixelated !important;
+                image-rendering: crisp-edges !important;
+            }
         `;
 
         document.head.appendChild(perfStyles);
         console.log('[PACDeluxe] Tooltip performance optimizations applied');
+
+        // === CRISP PIXEL ART ENFORCER ===
+        // React re-renders override CSS, so we use JS to apply inline styles
+        (function enforcePixelatedRendering() {
+            const selectors = [
+                '#game-additional-pokemons img',
+                '.game-players-list img',
+                '.game-player-portrait img',
+                '[class*="portrait"] img',
+                '[class*="avatar"] img'
+            ].join(',');
+
+            function applyPixelated() {
+                document.querySelectorAll(selectors).forEach(img => {
+                    if (img.style.imageRendering !== 'pixelated') {
+                        img.style.imageRendering = 'pixelated';
+                    }
+                });
+            }
+
+            // Apply immediately and on interval
+            applyPixelated();
+            setInterval(applyPixelated, 500);
+
+            // Also observe DOM for new images
+            new MutationObserver(applyPixelated).observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+
+            console.log('[PACDeluxe] Pixel art rendering enforcer active');
+        })();
 
         // Remove any existing overlay (from HTML template or previous injection)
         const existingOverlay = document.getElementById('pac-perf');
@@ -725,13 +768,17 @@ fn main() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
+            // Get version for window title
+            let version = app.package_info().version.to_string();
+            let title = format!("PACDeluxe v{}", version);
+
             // Create window programmatically with on_page_load handler
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::External("https://pokemon-auto-chess.com".parse().unwrap())
             )
-            .title("PACDeluxe")
+            .title(&title)
             .inner_size(1280.0, 900.0)
             .min_inner_size(1024.0, 768.0)
             .resizable(true)
