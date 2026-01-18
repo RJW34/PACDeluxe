@@ -664,9 +664,15 @@ const OVERLAY_SCRIPT: &str = r#"
                     isUpdating = true;
                     openBoosterBtn.textContent = 'Open a Booster';
                     isUpdating = false;
-                } else if (shouldShowFlipAll && openBoosterBtn.disabled) {
-                    // Just fix disabled state without other changes
+                } else if (shouldShowFlipAll && (openBoosterBtn.disabled || !openBoosterBtn.classList.contains('blue'))) {
+                    // Fix disabled state AND ensure blue styling when unflipped cards exist
+                    // This handles the race condition when going from 1 to 0 packs
+                    isUpdating = true;
                     openBoosterBtn.disabled = false;
+                    if (!openBoosterBtn.classList.contains('blue')) {
+                        openBoosterBtn.classList.add('blue');
+                    }
+                    isUpdating = false;
                 }
             }
 
