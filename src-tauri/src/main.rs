@@ -628,14 +628,14 @@ const OVERLAY_SCRIPT: &str = r#"
             console.log('[PACDeluxe] Session recovery monitor active');
         })();
 
-        // === DYNAMIC BOOSTER BUTTON TEXT ===
+        // === DYNAMIC BOOSTER BUTTON TEXT & LOGIC ===
         // Changes the "Open Booster" button text to "Flip All" when cards are unflipped
-        // This provides clearer UX by showing what the button will actually do
+        // Also attaches click logic to flip all cards when the button is in "Flip All" state
         (function dynamicBoosterButton() {
             let isUpdating = false;
 
             function updateButtonText() {
-                if (isUpdating) return; // Prevent re-entry
+                if (isUpdating) return;
 
                 const boostersPage = document.getElementById('boosters-page');
                 if (!boostersPage) return;
@@ -643,15 +643,34 @@ const OVERLAY_SCRIPT: &str = r#"
                 const openBoosterBtn = boostersPage.querySelector('button.bubbly');
                 if (!openBoosterBtn) return;
 
-                // Check for unflipped cards (cards without the 'flipped' class)
+                // Add click listener if not already present
+                if (!openBoosterBtn.dataset.pacListener) {
+                    openBoosterBtn.dataset.pacListener = 'true';
+                    openBoosterBtn.addEventListener('click', (e) => {
+                        if (openBoosterBtn.textContent === 'Flip All') {
+                            // Find all unflipped cards and click them
+                            const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
+                            if (unflippedCards.length > 0) {
+                                console.log('[PACDeluxe] Flipping ' + unflippedCards.length + ' cards...');
+                                unflippedCards.forEach(card => {
+                                    // The card itself or its first child usually handles the click
+                                    card.click();
+                                });
+                                // Prevent default to avoid any conflict with game's "Open Booster" logic
+                                // if it were somehow triggered in this state
+                                e.stopImmediatePropagation();
+                            }
+                        }
+                    }, true); // Use capture phase to ensure we intercept first
+                }
+
+                // Check for unflipped cards
                 const boosterCards = boostersPage.querySelectorAll('.booster-card');
                 const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
 
-                // If there are cards and some are unflipped, show "Flip All"
                 const shouldShowFlipAll = boosterCards.length > 0 && unflippedCards.length > 0;
                 const currentlyShowsFlipAll = openBoosterBtn.textContent === 'Flip All';
 
-                // Only modify DOM if state actually changed (prevents feedback loops)
                 if (shouldShowFlipAll && !currentlyShowsFlipAll) {
                     isUpdating = true;
                     openBoosterBtn.textContent = 'Flip All';
@@ -663,10 +682,11 @@ const OVERLAY_SCRIPT: &str = r#"
                 } else if (!shouldShowFlipAll && currentlyShowsFlipAll) {
                     isUpdating = true;
                     openBoosterBtn.textContent = 'Open a Booster';
+                    if (openBoosterBtn.classList.contains('blue')) {
+                        openBoosterBtn.classList.remove('blue');
+                    }
                     isUpdating = false;
                 } else if (shouldShowFlipAll && (openBoosterBtn.disabled || !openBoosterBtn.classList.contains('blue'))) {
-                    // Fix disabled state AND ensure blue styling when unflipped cards exist
-                    // This handles the race condition when going from 1 to 0 packs
                     isUpdating = true;
                     openBoosterBtn.disabled = false;
                     if (!openBoosterBtn.classList.contains('blue')) {
@@ -676,10 +696,8 @@ const OVERLAY_SCRIPT: &str = r#"
                 }
             }
 
-            // Check periodically (no MutationObserver - it causes feedback loops)
             setInterval(updateButtonText, 250);
-
-            console.log('[PACDeluxe] Dynamic booster button text ready');
+            console.log('[PACDeluxe] Dynamic booster button text & logic ready');
         })();
 
         // === AUTO-UPDATER ===
