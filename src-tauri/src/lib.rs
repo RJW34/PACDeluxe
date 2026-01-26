@@ -1,6 +1,7 @@
 //! Pokemon Auto Chess Deluxe
 //!
-//! Native Windows wrapper with performance optimizations.
+//! Cross-platform native wrapper with performance optimizations.
+//! Supports Windows (WebView2) and Linux (WebKitGTK).
 
 pub mod performance;
 pub mod commands;

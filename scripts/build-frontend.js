@@ -104,6 +104,25 @@ function createIndexHtml(buildVersion) {
   <link rel="icon" href="assets/ui/favicon.ico" />
   <title>PACDeluxe</title>
   <link rel="stylesheet" type="text/css" href="index.css" />
+  <!-- PACDeluxe: Force crisp pixel rendering for sprite art -->
+  <style>
+    canvas,
+    img,
+    .game-scene canvas,
+    #game canvas,
+    [class*="pokemon"],
+    [class*="sprite"],
+    [class*="shop"] img,
+    [class*="shop"] canvas {
+      image-rendering: pixelated !important;
+      image-rendering: crisp-edges !important;
+      -ms-interpolation-mode: nearest-neighbor !important;
+    }
+    /* WebView2-specific: ensure no smoothing on any scaled images */
+    * {
+      -webkit-font-smoothing: none;
+    }
+  </style>
   <!-- PACDeluxe build version for cache invalidation -->
   <script>window.__PAC_BUILD_VERSION__="${buildVersion}";window.__PAC_BUILD_TIME__="${new Date().toISOString()}";</script>
   <script src="index.js" defer></script>

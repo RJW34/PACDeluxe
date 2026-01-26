@@ -1,4 +1,4 @@
-//! Tauri Commands - Windows Only
+//! Tauri Commands - Cross-platform
 //!
 //! IPC commands for performance monitoring and window control.
 //! No game state access.
@@ -20,6 +20,28 @@ pub enum WindowMode {
     Windowed,
     Fullscreen,
     BorderlessWindowed,
+}
+
+/// Stored window mode state (avoids fragile window property queries)
+pub static CURRENT_WINDOW_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+// 0 = Windowed, 1 = Fullscreen, 2 = BorderlessWindowed
+
+impl WindowMode {
+    fn to_u8(self) -> u8 {
+        match self {
+            WindowMode::Windowed => 0,
+            WindowMode::Fullscreen => 1,
+            WindowMode::BorderlessWindowed => 2,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => WindowMode::Fullscreen,
+            2 => WindowMode::BorderlessWindowed,
+            _ => WindowMode::Windowed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,8 +72,9 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     system.refresh_all();
 
     let gpu_name = detect_gpu();
+    let os_name = get_os_name();
     let info = SystemInfo {
-        os: "Windows".to_string(),
+        os: os_name,
         cpu_cores: system.cpus().len(),
         total_memory_mb: system.total_memory() / 1024 / 1024,
         gpu_name: gpu_name.clone(),
@@ -62,6 +85,20 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     Ok(info)
 }
 
+/// Get the operating system name
+fn get_os_name() -> String {
+    #[cfg(target_os = "windows")]
+    { "Windows".to_string() }
+    #[cfg(target_os = "linux")]
+    { "Linux".to_string() }
+    #[cfg(target_os = "macos")]
+    { "macOS".to_string() }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    { "Unknown".to_string() }
+}
+
+/// Detect GPU name (Windows - via DXGI)
+#[cfg(target_os = "windows")]
 fn detect_gpu() -> Option<String> {
     use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 
@@ -95,10 +132,46 @@ fn detect_gpu() -> Option<String> {
     None
 }
 
+/// Detect GPU name (Linux - via sysfs)
+#[cfg(target_os = "linux")]
+fn detect_gpu() -> Option<String> {
+    // Try to read GPU info from /sys/class/drm
+    if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Look for card* directories (not card*-*)
+            if name.starts_with("card") && !name.contains('-') {
+                let device_path = entry.path().join("device");
+                let vendor_path = device_path.join("vendor");
+                let device_id_path = device_path.join("device");
+
+                if let (Ok(vendor), Ok(device_id)) = (
+                    std::fs::read_to_string(&vendor_path),
+                    std::fs::read_to_string(&device_id_path),
+                ) {
+                    let vendor = vendor.trim();
+                    let device_id = device_id.trim();
+                    let gpu_name = match vendor {
+                        "0x10de" => format!("NVIDIA GPU ({})", device_id),
+                        "0x1002" => format!("AMD GPU ({})", device_id),
+                        "0x8086" => format!("Intel GPU ({})", device_id),
+                        _ => format!("GPU (vendor: {}, device: {})", vendor, device_id),
+                    };
+                    debug!("Detected GPU: {}", gpu_name);
+                    return Some(gpu_name);
+                }
+            }
+        }
+    }
+    debug!("No GPU detected via sysfs");
+    None
+}
+
 /// Toggle exclusive fullscreen mode
 #[tauri::command]
 pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
     debug!("Toggle fullscreen requested");
+    use std::sync::atomic::Ordering;
 
     let window = app.get_webview_window("main")
         .ok_or_else(|| {
@@ -106,21 +179,29 @@ pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
             "Main window not found".to_string()
         })?;
 
-    let is_fullscreen = window.is_fullscreen()
-        .map_err(|e| {
-            warn!("Failed to get fullscreen state: {}", e);
-            e.to_string()
-        })?;
+    let current_mode = WindowMode::from_u8(CURRENT_WINDOW_MODE.load(Ordering::SeqCst));
 
-    // Simply toggle fullscreen state
-    window.set_fullscreen(!is_fullscreen)
-        .map_err(|e| {
-            warn!("Failed to set fullscreen to {}: {}", !is_fullscreen, e);
-            e.to_string()
-        })?;
-
-    debug!("Fullscreen toggled: {} -> {}", is_fullscreen, !is_fullscreen);
-    Ok(!is_fullscreen)
+    if current_mode == WindowMode::Fullscreen {
+        // Exit fullscreen -> go to Windowed
+        window.set_fullscreen(false).map_err(|e| e.to_string())?;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        window.set_decorations(true).map_err(|e| e.to_string())?;
+        CURRENT_WINDOW_MODE.store(WindowMode::Windowed.to_u8(), Ordering::SeqCst);
+        debug!("Fullscreen toggled: Fullscreen -> Windowed");
+        Ok(false)
+    } else {
+        // Enter fullscreen from any mode
+        if current_mode == WindowMode::BorderlessWindowed {
+            // First restore from borderless
+            window.set_decorations(true).map_err(|e| e.to_string())?;
+            window.unmaximize().map_err(|e| e.to_string())?;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        window.set_fullscreen(true).map_err(|e| e.to_string())?;
+        CURRENT_WINDOW_MODE.store(WindowMode::Fullscreen.to_u8(), Ordering::SeqCst);
+        debug!("Fullscreen toggled: {:?} -> Fullscreen", current_mode);
+        Ok(true)
+    }
 }
 
 /// Get WebView2 process elevation telemetry
@@ -163,6 +244,7 @@ pub fn get_hdr_status() -> HdrInfo {
 #[tauri::command]
 pub async fn set_window_mode(app: AppHandle, mode: WindowMode) -> Result<WindowMode, String> {
     debug!("Setting window mode to {:?}", mode);
+    use std::sync::atomic::Ordering;
 
     let window = app.get_webview_window("main")
         .ok_or_else(|| {
@@ -170,51 +252,67 @@ pub async fn set_window_mode(app: AppHandle, mode: WindowMode) -> Result<WindowM
             "Main window not found".to_string()
         })?;
 
+    let current_mode = WindowMode::from_u8(CURRENT_WINDOW_MODE.load(Ordering::SeqCst));
+
+    // Skip if already in requested mode
+    if current_mode == mode {
+        debug!("Already in {:?} mode, skipping", mode);
+        return Ok(mode);
+    }
+
+    // Delay between window operations to let Windows process them
+    let delay = || std::thread::sleep(std::time::Duration::from_millis(50));
+
     match mode {
         WindowMode::Windowed => {
-            window.set_fullscreen(false).map_err(|e| e.to_string())?;
-            // Restore decorations first, then unmaximize
+            // Exit fullscreen if needed
+            if current_mode == WindowMode::Fullscreen {
+                window.set_fullscreen(false).map_err(|e| e.to_string())?;
+                delay();
+            }
+            // Restore decorations
             window.set_decorations(true).map_err(|e| e.to_string())?;
-            window.unmaximize().map_err(|e| e.to_string())?;
+            delay();
+            // Unmaximize if we were borderless
+            if current_mode == WindowMode::BorderlessWindowed {
+                window.unmaximize().map_err(|e| e.to_string())?;
+            }
             debug!("Window mode set to Windowed");
         }
         WindowMode::Fullscreen => {
+            // Clean up borderless state first
+            if current_mode == WindowMode::BorderlessWindowed {
+                window.set_decorations(true).map_err(|e| e.to_string())?;
+                window.unmaximize().map_err(|e| e.to_string())?;
+                delay();
+            }
             window.set_fullscreen(true).map_err(|e| e.to_string())?;
             debug!("Window mode set to Fullscreen");
         }
         WindowMode::BorderlessWindowed => {
-            window.set_fullscreen(false).map_err(|e| e.to_string())?;
-            // Remove decorations and maximize to fill screen
+            // Exit fullscreen first if needed
+            if current_mode == WindowMode::Fullscreen {
+                window.set_fullscreen(false).map_err(|e| e.to_string())?;
+                delay();
+            }
+            // Remove decorations then maximize
             window.set_decorations(false).map_err(|e| e.to_string())?;
+            delay();
             window.maximize().map_err(|e| e.to_string())?;
             debug!("Window mode set to BorderlessWindowed");
         }
     }
 
+    CURRENT_WINDOW_MODE.store(mode.to_u8(), Ordering::SeqCst);
     Ok(mode)
 }
 
 /// Get current window display mode
 #[tauri::command]
-pub async fn get_window_mode(app: AppHandle) -> Result<WindowMode, String> {
-    let window = app.get_webview_window("main")
-        .ok_or_else(|| {
-            warn!("Main window not found for window mode query");
-            "Main window not found".to_string()
-        })?;
-
-    let is_fullscreen = window.is_fullscreen().unwrap_or(false);
-    let is_decorated = window.is_decorated().unwrap_or(true);
-    let is_maximized = window.is_maximized().unwrap_or(false);
-
-    let mode = match (is_fullscreen, is_decorated, is_maximized) {
-        (true, _, _) => WindowMode::Fullscreen,
-        (false, false, true) => WindowMode::BorderlessWindowed,
-        _ => WindowMode::Windowed,
-    };
-
-    debug!("Current window mode: {:?} (fullscreen={}, decorated={}, maximized={})",
-           mode, is_fullscreen, is_decorated, is_maximized);
+pub async fn get_window_mode(_app: AppHandle) -> Result<WindowMode, String> {
+    use std::sync::atomic::Ordering;
+    let mode = WindowMode::from_u8(CURRENT_WINDOW_MODE.load(Ordering::SeqCst));
+    debug!("Current window mode: {:?}", mode);
     Ok(mode)
 }
 

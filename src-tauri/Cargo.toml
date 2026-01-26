@@ -1,6 +1,6 @@
 [package]
 name = "pac-deluxe"
-version = "1.0.0"
+version = "1.5.0"
 description = "Native performance client for Pokemon Auto Chess"
 authors = ["PACDeluxe Contributors"]
 edition = "2021"
@@ -41,6 +41,10 @@ windows = { version = "0.58", features = [
     "Win32_System_Performance",
 ] }
 wmi = "0.14"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Process priority via POSIX syscalls
+nix = { version = "0.29", features = ["process", "sched"] }
 
 [features]
 default = ["custom-protocol"]

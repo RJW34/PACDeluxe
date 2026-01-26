@@ -1,5 +1,5 @@
-// Windows subsystem - no console in release
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Windows subsystem - no console in release (Windows only)
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 mod performance;
 mod commands;
@@ -13,8 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::path::PathBuf;
 
-/// Clean up problematic files from old installations
+/// Clean up problematic files from old installations (Windows)
 /// Runs on every startup to ensure clean state
+#[cfg(target_os = "windows")]
 fn cleanup_old_installation() {
     // Get the executable directory
     let exe_dir = match std::env::current_exe() {
@@ -22,7 +23,7 @@ fn cleanup_old_installation() {
         Err(_) => None,
     };
 
-    // Get AppData directories
+    // Get AppData directories (Windows-specific)
     let local_appdata = std::env::var("LOCALAPPDATA").ok().map(PathBuf::from);
     let appdata = std::env::var("APPDATA").ok().map(PathBuf::from);
 
@@ -80,6 +81,60 @@ fn cleanup_old_installation() {
     }
 }
 
+/// Clean up problematic files from old installations (Linux)
+/// Runs on every startup to ensure clean state
+#[cfg(target_os = "linux")]
+fn cleanup_old_installation() {
+    // Get XDG directories for Linux (with fallbacks to ~/.cache, ~/.config, ~/.local/share)
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    let cache_home = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|h| h.join(".cache")));
+    let config_home = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|h| h.join(".config")));
+
+    let mut cleaned = Vec::new();
+
+    // List of known problematic files/directories to remove on Linux
+    let problematic_patterns: Vec<(&str, Option<&PathBuf>)> = vec![
+        // Old cache files
+        ("pacdeluxe/cache_v0", cache_home.as_ref()),
+        ("PACDeluxe/cache_v0", cache_home.as_ref()),
+        // Old config files
+        ("pacdeluxe/old_config.json", config_home.as_ref()),
+        ("PACDeluxe/old_config.json", config_home.as_ref()),
+    ];
+
+    for (pattern, base_dir) in problematic_patterns {
+        if let Some(base) = base_dir {
+            let full_path = base.join(pattern);
+            if full_path.exists() {
+                match if full_path.is_dir() {
+                    std::fs::remove_dir_all(&full_path)
+                } else {
+                    std::fs::remove_file(&full_path)
+                } {
+                    Ok(_) => {
+                        cleaned.push(full_path.display().to_string());
+                    }
+                    Err(e) => {
+                        warn!("Failed to clean up {}: {}", full_path.display(), e);
+                    }
+                }
+            }
+        }
+    }
+
+    if !cleaned.is_empty() {
+        info!("Cleaned up {} old installation artifacts: {:?}", cleaned.len(), cleaned);
+    } else {
+        debug!("No old installation artifacts to clean up");
+    }
+}
+
 /// Counter for unique popup window labels
 static POPUP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -94,10 +149,9 @@ const OVERLAY_SCRIPT: &str = r#"
         }
 
         // === SCROLLBAR BUG FIX ===
-        // Hide all scrollbars globally - game doesn't need visible scrollbars
+        // Hide all scrollbars globally - game should never show scrollbars
         const scrollbarFix = document.createElement('style');
         scrollbarFix.textContent = `
-            /* Hide all scrollbars globally */
             * {
                 scrollbar-width: none !important;
                 -ms-overflow-style: none !important;
@@ -108,26 +162,31 @@ const OVERLAY_SCRIPT: &str = r#"
                 height: 0 !important;
             }
             html, body {
-                overflow: hidden !important;
-                width: 100% !important;
-                max-width: 100% !important;
-            }
-            body > div, #root {
-                max-width: 100% !important;
-                overflow-x: hidden !important;
+                overflow: hidden;
+                width: 100%;
+                max-width: 100%;
             }
         `;
         document.head.appendChild(scrollbarFix);
         console.log('[PACDeluxe] Scrollbar fix applied');
 
         // === CONTEXT MENU FIX ===
-        // Disable default WebView2 context menu to prevent interference with game UI
-        // (Tier list maker and other features use mouse events that conflict with context menu)
-        document.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            return false;
-        });
-        console.log('[PACDeluxe] Context menu disabled');
+        // Disable default WebView2 context menu only on game canvas to prevent interference
+        // (Tier list maker uses mouse events that conflict with context menu)
+        // Note: We target canvas specifically to avoid breaking tooltips and other UI
+        function disableCanvasContextMenu() {
+            const canvas = document.querySelector('canvas');
+            if (canvas && !canvas._pacContextMenuDisabled) {
+                canvas.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                });
+                canvas._pacContextMenuDisabled = true;
+                console.log('[PACDeluxe] Canvas context menu disabled');
+            }
+        }
+        disableCanvasContextMenu();
+        // Re-check periodically as Phaser may recreate canvas
+        setInterval(disableCanvasContextMenu, 2000);
 
         // === ASSET CACHE WITH VERSION CHECK ===
         // Intercepts fetch() for static assets (images, JSON, audio)
@@ -163,10 +222,10 @@ const OVERLAY_SCRIPT: &str = r#"
                 return false;
             }
 
-            // In-memory cache (256MB limit)
+            // In-memory cache (128MB limit - safe for 4GB systems)
             const cache = new Map();
             let cacheSize = 0;
-            const maxSize = 256 * 1024 * 1024;
+            const maxSize = 128 * 1024 * 1024;
 
             const originalFetch = window.fetch.bind(window);
             window.fetch = async (input, init) => {
@@ -225,112 +284,28 @@ const OVERLAY_SCRIPT: &str = r#"
             console.log('[PACDeluxe] Asset cache initialized (v' + currentVersion + ')');
         })();
 
-        // === TOOLTIP & HOVER PERFORMANCE OPTIMIZATIONS ===
-        // Game uses react-tooltip which can lag on hover due to positioning recalculations
-        // These CSS optimizations force GPU acceleration and reduce layout thrashing
+        // === MINIMAL STYLING (performance optimizations removed for 6.8.0 compatibility) ===
         const perfStyles = document.createElement('style');
         perfStyles.id = 'pac-perf-styles';
         perfStyles.textContent = `
-            /* GPU-accelerate react-tooltip for smoother show/hide */
-            .react-tooltip {
-                transform: translateZ(0) !important;
-                will-change: opacity, transform !important;
-                contain: layout style paint !important;
-                backface-visibility: hidden !important;
-            }
-
-            /* Optimize any element with tooltip data attribute */
-            [data-tooltip-id] {
-                will-change: auto;
-            }
-            [data-tooltip-id]:hover {
-                will-change: contents;
-            }
-
-            /* GPU-accelerate game detail popups and menus */
-            /* Note: Removed .my-box and .nes-container - was causing Additional picks popup sizing issues */
-            .game-pokemon-detail,
-            .game-player-detail {
-                transform: translateZ(0);
-                backface-visibility: hidden;
-            }
-
-            /* Optimize synergy and item displays that show on hover */
-            .synergy-detail,
-            .item-detail,
-            .pokemon-detail {
-                will-change: opacity, visibility;
-            }
-
-            /* Optimize filters that run on hover (grayscale, contrast, etc) */
-            [class*="-portrait-hint"],
-            [class*="-locked"] {
-                transform: translateZ(0);
-                backface-visibility: hidden;
-            }
-
             /* Fix Additional Picks popup - shift up so bottom row is fully visible */
-            /* (This is an upstream bug we're fixing for PACDeluxe users) */
             #game-additional-pokemons {
                 transform: translateY(-25px) !important;
             }
-
-            /* Force crisp pixel-art rendering on pokemon portraits */
-            /* Prevents color bleeding from bilinear interpolation on scaled sprites */
-            #game-additional-pokemons img,
-            .game-players-list img,
-            .game-player-portrait img,
-            [class*="portrait"] img,
-            [class*="avatar"] img {
-                image-rendering: pixelated !important;
-                image-rendering: crisp-edges !important;
-            }
         `;
-
         document.head.appendChild(perfStyles);
-        console.log('[PACDeluxe] Tooltip performance optimizations applied');
+        console.log('[PACDeluxe] Minimal styling applied');
 
-        // === CRISP PIXEL ART ENFORCER ===
-        // React re-renders override CSS, so we use JS to apply inline styles
-        (function enforcePixelatedRendering() {
-            const selectors = [
-                '#game-additional-pokemons img',
-                '.game-players-list img',
-                '.game-player-portrait img',
-                '[class*="portrait"] img',
-                '[class*="avatar"] img'
-            ].join(',');
-
-            function applyPixelated() {
-                document.querySelectorAll(selectors).forEach(img => {
-                    if (img.style.imageRendering !== 'pixelated') {
-                        img.style.imageRendering = 'pixelated';
-                    }
-                });
-            }
-
-            // Apply immediately and on interval
-            applyPixelated();
-            setInterval(applyPixelated, 500);
-
-            // Also observe DOM for new images
-            new MutationObserver(applyPixelated).observe(document.body, {
-                childList: true,
-                subtree: true
-            });
-
-            console.log('[PACDeluxe] Pixel art rendering enforcer active');
-        })();
-
-        // Remove any existing overlay (from HTML template or previous injection)
-        const existingOverlay = document.getElementById('pac-perf');
-        if (existingOverlay) existingOverlay.remove();
-
-        // Prevent duplicate injection - if our overlay already exists, bail out
-        if (document.getElementById('pac-perf-rust')) {
-            console.log('[PACDeluxe] Overlay already exists, skipping duplicate injection');
+        // Prevent duplicate injection - remove any existing overlay and bail if already injected
+        ['pac-perf', 'pac-perf-rust'].forEach(id => {
+            const existing = document.getElementById(id);
+            if (existing) existing.remove();
+        });
+        if (window._pacOverlayInjected) {
+            console.log('[PACDeluxe] Overlay already initialized, skipping');
             return;
         }
+        window._pacOverlayInjected = true;
 
         // Create overlay element
         const overlay = document.createElement('div');
@@ -364,19 +339,22 @@ const OVERLAY_SCRIPT: &str = r#"
             overlay.style.left = rect.left + 'px';
             overlay.style.top = rect.top + 'px';
             e.preventDefault();
+            e.stopPropagation(); // Prevent game from receiving this event
         });
 
         document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
+            e.stopPropagation(); // Prevent game interactions during drag
             const dx = e.clientX - dragStartX;
             const dy = e.clientY - dragStartY;
             overlay.style.left = (overlayStartX + dx) + 'px';
             overlay.style.top = (overlayStartY + dy) + 'px';
         });
 
-        document.addEventListener('mouseup', () => {
+        document.addEventListener('mouseup', (e) => {
             if (!isDragging) return;
             isDragging = false;
+            e.stopPropagation(); // Prevent game from receiving drop event
 
             // Keep position where user dropped it
             const rect = overlay.getBoundingClientRect();
@@ -484,6 +462,14 @@ const OVERLAY_SCRIPT: &str = r#"
 
         if (visible) setTimeout(() => { /* trigger initial update */ }, 100);
 
+        // Helper: invoke with timeout to prevent hanging
+        async function invokeWithTimeout(invoke, cmd, args, timeoutMs = 3000) {
+            return Promise.race([
+                invoke(cmd, args),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs))
+            ]);
+        }
+
         // Update overlay using stored element references
         async function updateOverlay() {
             if (!visible) return;
@@ -495,14 +481,14 @@ const OVERLAY_SCRIPT: &str = r#"
             const invoke = window.__TAURI__?.core?.invoke;
             if (invoke) {
                 try {
-                    // Fetch CPU/Memory stats
-                    const stats = await invoke('get_performance_stats');
+                    // Fetch CPU/Memory stats (with timeout)
+                    const stats = await invokeWithTimeout(invoke, 'get_performance_stats');
                     if (stats) {
                         if (cpuEl) cpuEl.textContent = typeof stats.cpu_usage === 'number' ? stats.cpu_usage.toFixed(1) : '--';
                         if (memEl) memEl.textContent = typeof stats.memory_usage_mb === 'number' ? (stats.memory_usage_mb / 1024).toFixed(2) : '--';
                     }
-                    // Fetch GPU stats
-                    const gpuStats = await invoke('get_gpu_stats');
+                    // Fetch GPU stats (with timeout)
+                    const gpuStats = await invokeWithTimeout(invoke, 'get_gpu_stats');
                     if (gpuStats && gpuEl) {
                         if (gpuStats.available) {
                             gpuEl.textContent = gpuStats.usage_percent.toFixed(1);
@@ -512,7 +498,7 @@ const OVERLAY_SCRIPT: &str = r#"
                     }
                     // Fetch HDR status (only once, doesn't change often)
                     if (hdrEl && hdrEl.textContent === '--') {
-                        const hdrInfo = await invoke('get_hdr_status');
+                        const hdrInfo = await invokeWithTimeout(invoke, 'get_hdr_status');
                         if (hdrInfo) {
                             if (hdrInfo.enabled) {
                                 hdrEl.textContent = hdrInfo.color_space;
@@ -653,15 +639,12 @@ const OVERLAY_SCRIPT: &str = r#"
                             if (unflippedCards.length > 0) {
                                 console.log('[PACDeluxe] Flipping ' + unflippedCards.length + ' cards...');
                                 unflippedCards.forEach(card => {
-                                    // The card itself or its first child usually handles the click
                                     card.click();
                                 });
-                                // Prevent default to avoid any conflict with game's "Open Booster" logic
-                                // if it were somehow triggered in this state
                                 e.stopImmediatePropagation();
                             }
                         }
-                    }, true); // Use capture phase to ensure we intercept first
+                    }, true);
                 }
 
                 // Check for unflipped cards
@@ -697,7 +680,7 @@ const OVERLAY_SCRIPT: &str = r#"
             }
 
             setInterval(updateButtonText, 250);
-            console.log('[PACDeluxe] Dynamic booster button text & logic ready');
+            console.log('[PACDeluxe] Dynamic booster button ready');
         })();
 
         // === AUTO-UPDATER ===
@@ -792,9 +775,13 @@ fn main() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // Get version for window title
+            // Get version for window title (add Dev suffix in debug builds)
             let version = app.package_info().version.to_string();
-            let title = format!("PACDeluxe v{}", version);
+            let title = if cfg!(debug_assertions) {
+                format!("PACDeluxe v{} (Dev)", version)
+            } else {
+                format!("PACDeluxe v{}", version)
+            };
 
             // Create window programmatically with on_page_load handler
             let window = WebviewWindowBuilder::new(

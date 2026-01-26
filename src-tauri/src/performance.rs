@@ -1,4 +1,4 @@
-//! Performance Optimization Module - Windows Only
+//! Performance Optimization Module - Cross-platform
 //!
 //! System-level performance optimizations for the native client.
 //! Affects only rendering and system performance, NOT gameplay.
@@ -7,10 +7,16 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Instant;
 use sysinfo::{System, Pid};
-use tauri::WebviewWindow;
 use tracing::{debug, info, warn};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+#[cfg(target_os = "windows")]
+use tauri::WebviewWindow;
+
+#[cfg(target_os = "windows")]
 use std::sync::Arc;
+
+#[cfg(target_os = "windows")]
 use wmi::{COMLibrary, WMIConnection};
 
 /// Performance statistics from native code
@@ -65,13 +71,16 @@ impl Default for PerformanceMonitor {
     }
 }
 
-/// Flag to track if WebView2 optimization thread is running
+/// Flag to track if WebView2 optimization thread is running (Windows only)
+#[cfg(target_os = "windows")]
 static WEBVIEW_OPTIMIZER_RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// Flag to track if WMI watcher is active (vs polling fallback)
+/// Flag to track if WMI watcher is active (vs polling fallback) (Windows only)
+#[cfg(target_os = "windows")]
 static WMI_WATCHER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Counter for number of WebView2 processes elevated
+/// Counter for number of WebView2 processes elevated (Windows only)
+#[cfg(target_os = "windows")]
 static PROCESSES_ELEVATED: AtomicU32 = AtomicU32::new(0);
 
 /// WebView2 elevation telemetry for monitoring optimization effectiveness
@@ -87,7 +96,8 @@ pub struct ElevationTelemetry {
     pub wmi_available: bool,
 }
 
-/// Get current WebView2 elevation telemetry
+/// Get current WebView2 elevation telemetry (Windows)
+#[cfg(target_os = "windows")]
 pub fn get_elevation_telemetry() -> ElevationTelemetry {
     let wmi_active = WMI_WATCHER_ACTIVE.load(Ordering::Relaxed);
     let optimizer_running = WEBVIEW_OPTIMIZER_RUNNING.load(Ordering::Relaxed);
@@ -100,6 +110,17 @@ pub fn get_elevation_telemetry() -> ElevationTelemetry {
     }
 }
 
+/// Get elevation telemetry (Linux - not applicable)
+#[cfg(target_os = "linux")]
+pub fn get_elevation_telemetry() -> ElevationTelemetry {
+    ElevationTelemetry {
+        processes_elevated: 0,
+        mode: "n/a".to_string(),
+        is_active: false,
+        wmi_available: false,
+    }
+}
+
 // ==================== GPU Monitoring ====================
 
 /// GPU usage statistics
@@ -107,7 +128,7 @@ pub fn get_elevation_telemetry() -> ElevationTelemetry {
 pub struct GpuStats {
     /// GPU utilization percentage (0-100)
     pub usage_percent: f32,
-    /// GPU name (from DXGI)
+    /// GPU name (from DXGI on Windows, /sys on Linux)
     pub name: Option<String>,
     /// Dedicated video memory in MB
     pub vram_total_mb: u64,
@@ -131,6 +152,7 @@ impl Default for GpuStats {
 
 /// GPU Monitor using Windows Performance Counters (PDH API)
 /// Requires Windows 10 1709+ for GPU Engine counters
+#[cfg(target_os = "windows")]
 pub struct GpuMonitor {
     query_handle: Option<isize>,
     counter_handle: Option<isize>,
@@ -140,6 +162,14 @@ pub struct GpuMonitor {
     last_error: Option<String>,
 }
 
+/// GPU Monitor stub for Linux (basic implementation)
+#[cfg(target_os = "linux")]
+pub struct GpuMonitor {
+    gpu_name: Option<String>,
+    is_initialized: bool,
+}
+
+#[cfg(target_os = "windows")]
 impl GpuMonitor {
     /// Create a new GPU monitor
     pub fn new() -> Self {
@@ -358,12 +388,14 @@ impl GpuMonitor {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl Default for GpuMonitor {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(target_os = "windows")]
 impl Drop for GpuMonitor {
     fn drop(&mut self) {
         if let Some(query) = self.query_handle {
@@ -372,6 +404,93 @@ impl Drop for GpuMonitor {
                 let _ = PdhCloseQuery(query);
             }
         }
+    }
+}
+
+// ==================== Linux GPU Monitor ====================
+
+#[cfg(target_os = "linux")]
+impl GpuMonitor {
+    /// Create a new GPU monitor (Linux - basic detection only)
+    pub fn new() -> Self {
+        let mut monitor = Self {
+            gpu_name: None,
+            is_initialized: false,
+        };
+        monitor.detect_gpu_info();
+        monitor
+    }
+
+    /// Detect GPU name from /sys/class/drm
+    fn detect_gpu_info(&mut self) {
+        // Try to read GPU info from sysfs
+        if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Look for card* directories
+                if name.starts_with("card") && !name.contains('-') {
+                    let device_path = entry.path().join("device");
+                    // Try to read vendor/device for identification
+                    let vendor_path = device_path.join("vendor");
+                    let device_id_path = device_path.join("device");
+
+                    if let (Ok(vendor), Ok(device_id)) = (
+                        std::fs::read_to_string(&vendor_path),
+                        std::fs::read_to_string(&device_id_path),
+                    ) {
+                        let vendor = vendor.trim();
+                        let device_id = device_id.trim();
+                        let gpu_name = match vendor {
+                            "0x10de" => format!("NVIDIA GPU ({})", device_id),
+                            "0x1002" => format!("AMD GPU ({})", device_id),
+                            "0x8086" => format!("Intel GPU ({})", device_id),
+                            _ => format!("GPU (vendor: {}, device: {})", vendor, device_id),
+                        };
+                        self.gpu_name = Some(gpu_name);
+                        self.is_initialized = true;
+                        debug!("Detected GPU: {:?}", self.gpu_name);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !self.is_initialized {
+            debug!("No GPU detected via sysfs");
+        }
+    }
+
+    /// Get current GPU usage (not available on Linux without vendor-specific tools)
+    pub fn get_usage(&self) -> f32 {
+        // GPU usage monitoring on Linux requires:
+        // - nvidia-smi for NVIDIA
+        // - radeontop for AMD
+        // - intel_gpu_top for Intel
+        // We return 0 as we don't have a universal solution
+        0.0
+    }
+
+    /// Get full GPU stats
+    pub fn get_stats(&self) -> GpuStats {
+        GpuStats {
+            usage_percent: 0.0,
+            name: self.gpu_name.clone(),
+            vram_total_mb: 0, // Would need vendor-specific tools
+            available: false, // Usage monitoring not available
+            error: Some("GPU usage monitoring not available on Linux".to_string()),
+        }
+    }
+
+    /// Check if GPU monitoring is available
+    pub fn is_available(&self) -> bool {
+        false // Usage monitoring not available on Linux
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Default for GpuMonitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -441,7 +560,8 @@ impl Default for HdrInfo {
     }
 }
 
-/// Detect HDR capability and status for all displays
+/// Detect HDR capability and status for all displays (Windows)
+#[cfg(target_os = "windows")]
 pub fn detect_hdr_info() -> HdrInfo {
     use windows::core::Interface;
     use windows::Win32::Graphics::Dxgi::{
@@ -533,6 +653,19 @@ pub fn detect_hdr_info() -> HdrInfo {
     info
 }
 
+/// Detect HDR capability (Linux - not available)
+#[cfg(target_os = "linux")]
+pub fn detect_hdr_info() -> HdrInfo {
+    // HDR detection on Linux would require:
+    // - XRandR properties for X11
+    // - Wayland KMS/DRM queries
+    // For now, we return a stub indicating HDR detection is not available
+    HdrInfo {
+        error: Some("HDR detection not available on Linux".to_string()),
+        ..Default::default()
+    }
+}
+
 /// Get cached HDR info (for frequent queries)
 static HDR_INFO: std::sync::OnceLock<Mutex<HdrInfo>> = std::sync::OnceLock::new();
 
@@ -569,8 +702,9 @@ pub fn refresh_hdr_info() -> HdrInfo {
     new_info
 }
 
-/// WMI event structure for process start trace
+/// WMI event structure for process start trace (Windows only)
 /// Maps to Win32_ProcessStartTrace WMI class
+#[cfg(target_os = "windows")]
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 struct ProcessStartTrace {
@@ -579,7 +713,8 @@ struct ProcessStartTrace {
     parent_process_id: u32,
 }
 
-/// Enable per-monitor DPI awareness for crisp rendering on high-DPI displays
+/// Enable per-monitor DPI awareness for crisp rendering on high-DPI displays (Windows)
+#[cfg(target_os = "windows")]
 fn enable_dpi_awareness() {
     use windows::Win32::UI::HiDpi::{
         SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -594,6 +729,7 @@ fn enable_dpi_awareness() {
 }
 
 /// Apply Windows system optimizations
+#[cfg(target_os = "windows")]
 pub fn apply_system_optimizations() {
     info!("Applying Windows performance optimizations");
 
@@ -643,7 +779,36 @@ pub fn apply_system_optimizations() {
     start_webview_optimizer();
 }
 
+/// Apply Linux system optimizations
+#[cfg(target_os = "linux")]
+pub fn apply_system_optimizations() {
+    info!("Applying Linux performance optimizations");
+
+    // Set process priority using nice (requires no special permissions for lowering priority)
+    // Nice values: -20 (highest priority) to 19 (lowest priority), 0 is default
+    // Increasing priority (negative nice) requires CAP_SYS_NICE capability
+    use nix::unistd::nice;
+
+    // Try to increase priority by decreasing nice value
+    // This will likely fail without elevated permissions, which is expected
+    match nice(-5) {
+        Ok(new_nice) => {
+            info!("Set process nice value to {} (elevated priority)", new_nice);
+        }
+        Err(e) => {
+            // This is expected to fail without CAP_SYS_NICE
+            debug!("Could not set elevated priority (requires CAP_SYS_NICE or root): {:?}", e);
+            // On Linux, we can't elevate priority without special permissions
+            // The app will run at normal priority, which is fine
+            info!("Running at normal priority (elevated priority requires CAP_SYS_NICE)");
+        }
+    }
+
+    info!("Linux optimizations applied (DPI/scaling handled by window manager)");
+}
+
 /// Disable Windows power throttling for the current process
+#[cfg(target_os = "windows")]
 fn disable_power_throttling() {
     use windows::Win32::System::Threading::{
         GetCurrentProcess, SetProcessInformation, ProcessPowerThrottling,
@@ -678,7 +843,8 @@ fn disable_power_throttling() {
     }
 }
 
-/// Start WebView2 optimizer - tries WMI event-driven approach first, falls back to polling
+/// Start WebView2 optimizer - tries WMI event-driven approach first, falls back to polling (Windows)
+#[cfg(target_os = "windows")]
 fn start_webview_optimizer() {
     // Only start once
     if WEBVIEW_OPTIMIZER_RUNNING.swap(true, Ordering::SeqCst) {
@@ -696,8 +862,9 @@ fn start_webview_optimizer() {
     start_polling_optimizer();
 }
 
-/// Start WMI-based process event watcher
+/// Start WMI-based process event watcher (Windows)
 /// Returns true if WMI watcher started successfully, false if unavailable
+#[cfg(target_os = "windows")]
 fn start_wmi_process_watcher() -> bool {
     let our_pid = std::process::id();
     let optimized_pids = Arc::new(Mutex::new(std::collections::HashSet::<u32>::new()));
@@ -802,8 +969,9 @@ fn start_wmi_process_watcher() -> bool {
     }
 }
 
-/// Elevate a single process by PID
+/// Elevate a single process by PID (Windows)
 /// Returns true if elevation succeeded
+#[cfg(target_os = "windows")]
 fn elevate_single_process(pid: u32) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
@@ -840,7 +1008,8 @@ fn elevate_single_process(pid: u32) -> bool {
     }
 }
 
-/// Check if a process is a descendant of another by PID only (no snapshot handle)
+/// Check if a process is a descendant of another by PID only (no snapshot handle) (Windows)
+#[cfg(target_os = "windows")]
 fn is_descendant_of_pid(pid: u32, ancestor_pid: u32) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -895,7 +1064,8 @@ fn is_descendant_of_pid(pid: u32, ancestor_pid: u32) -> bool {
     }
 }
 
-/// Start polling-based WebView2 optimizer (fallback when WMI unavailable)
+/// Start polling-based WebView2 optimizer (fallback when WMI unavailable) (Windows)
+#[cfg(target_os = "windows")]
 fn start_polling_optimizer() {
     std::thread::spawn(|| {
         // Wait for WebView2 to spawn
@@ -918,7 +1088,8 @@ fn start_polling_optimizer() {
     debug!("Started polling-based WebView2 optimizer thread");
 }
 
-/// Find and elevate WebView2 child processes
+/// Find and elevate WebView2 child processes (Windows)
+#[cfg(target_os = "windows")]
 fn elevate_webview2_processes(already_optimized: &std::collections::HashSet<u32>) -> Option<Vec<u32>> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -1002,8 +1173,9 @@ fn elevate_webview2_processes(already_optimized: &std::collections::HashSet<u32>
     }
 }
 
-/// Check if a process is a descendant of another process
+/// Check if a process is a descendant of another process (Windows)
 /// Uses a separate snapshot to avoid modifying the caller's iterator position
+#[cfg(target_os = "windows")]
 fn is_descendant_of(_snapshot: windows::Win32::Foundation::HANDLE, pid: u32, ancestor_pid: u32) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -1059,6 +1231,7 @@ fn is_descendant_of(_snapshot: windows::Win32::Foundation::HANDLE, pid: u32, anc
     }
 }
 
+#[cfg(target_os = "windows")]
 fn register_timer_cleanup() {
     use std::sync::Once;
     static REGISTERED: Once = Once::new();
@@ -1079,7 +1252,8 @@ fn register_timer_cleanup() {
     });
 }
 
-/// Apply window optimizations
+/// Apply window optimizations (Windows)
+#[cfg(target_os = "windows")]
 pub fn optimize_window(window: &WebviewWindow) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Dwm::{
@@ -1140,9 +1314,10 @@ pub fn optimize_window(window: &WebviewWindow) {
     info!("Window optimizations applied");
 }
 
-/// Configure DXGI for lower latency
+/// Configure DXGI for lower latency (Windows)
 /// Note: Direct swap chain access not available for WebView2 scenarios.
 /// This function sets GPU scheduling hints that affect frame delivery.
+#[cfg(target_os = "windows")]
 fn configure_dxgi_latency() {
     use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 
@@ -1172,6 +1347,17 @@ fn configure_dxgi_latency() {
 
     // Log that we've configured what we can
     debug!("DXGI latency optimization: DWM effects disabled, GPU adapter verified");
+}
+
+// ==================== Linux Window Optimization (no-op) ====================
+
+/// Apply window optimizations (Linux - handled by window manager)
+#[cfg(target_os = "linux")]
+pub fn optimize_window(_window: &tauri::WebviewWindow) {
+    // On Linux, window optimizations like DWM are not applicable.
+    // The window manager (GNOME, KDE, etc.) handles compositor effects.
+    // WebKitGTK is used instead of WebView2.
+    info!("Window optimizations skipped (Linux uses window manager compositor)");
 }
 
 #[cfg(test)]
