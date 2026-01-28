@@ -149,9 +149,12 @@ const OVERLAY_SCRIPT: &str = r#"
         }
 
         // === SCROLLBAR BUG FIX ===
-        // Hide all scrollbars globally - game should never show scrollbars
+        // Hide all scrollbars and fix viewport sizing issues
+        // Problem: 100vh/100vw can cause overflow due to browser UI
+        // Solution: Use 100% sizing with overflow containment
         const scrollbarFix = document.createElement('style');
         scrollbarFix.textContent = `
+            /* Hide all scrollbars globally */
             * {
                 scrollbar-width: none !important;
                 -ms-overflow-style: none !important;
@@ -161,14 +164,39 @@ const OVERLAY_SCRIPT: &str = r#"
                 width: 0 !important;
                 height: 0 !important;
             }
-            html, body {
-                overflow: hidden;
-                width: 100%;
-                max-width: 100%;
+            /* Fix viewport sizing - use % instead of vh/vw to avoid browser UI issues */
+            html {
+                overflow: hidden !important;
+                width: 100% !important;
+                height: 100% !important;
+                max-width: 100% !important;
+                max-height: 100% !important;
+            }
+            body {
+                overflow: hidden !important;
+                width: 100% !important;
+                height: 100% !important;
+                max-width: 100% !important;
+                max-height: 100% !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+            /* Ensure root container fills viewport without overflow */
+            #root {
+                overflow: hidden !important;
+                width: 100% !important;
+                height: 100% !important;
+                max-width: 100vw !important;
+                max-height: 100vh !important;
+            }
+            /* Fix game container to prevent horizontal overflow */
+            #game, #game-wrapper {
+                max-width: 100% !important;
+                overflow: hidden !important;
             }
         `;
         document.head.appendChild(scrollbarFix);
-        console.log('[PACDeluxe] Scrollbar fix applied');
+        console.log('[PACDeluxe] Scrollbar/viewport fix applied');
 
         // === CONTEXT MENU FIX ===
         // Disable default WebView2 context menu only on game canvas to prevent interference

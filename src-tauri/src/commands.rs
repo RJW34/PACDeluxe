@@ -217,7 +217,8 @@ pub fn get_webview_telemetry() -> ElevationTelemetry {
 }
 
 /// Get GPU usage statistics
-/// Uses Windows Performance Counters (PDH API) for GPU engine utilization
+/// Windows: Uses Performance Counters (PDH API) for GPU engine utilization
+/// Linux: Basic GPU detection only (usage monitoring not available)
 #[tauri::command]
 pub fn get_gpu_stats() -> GpuStats {
     let stats = get_gpu_stats_impl();
@@ -229,7 +230,8 @@ pub fn get_gpu_stats() -> GpuStats {
 }
 
 /// Get HDR display status
-/// Detects HDR capability and current status via DXGI 1.6
+/// Windows: Detects HDR capability via DXGI 1.6
+/// Linux: Not available (returns stub)
 #[tauri::command]
 pub fn get_hdr_status() -> HdrInfo {
     let info = get_hdr_info();
@@ -260,7 +262,7 @@ pub async fn set_window_mode(app: AppHandle, mode: WindowMode) -> Result<WindowM
         return Ok(mode);
     }
 
-    // Delay between window operations to let Windows process them
+    // Delay between window operations to let the window manager process them
     let delay = || std::thread::sleep(std::time::Duration::from_millis(50));
 
     match mode {

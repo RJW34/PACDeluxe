@@ -116,7 +116,9 @@ npm test
 
 ### Keyboard Shortcuts
 
-- `F12 + P`: Toggle performance overlay
+- `Ctrl+Shift+P`: Toggle performance overlay
+- `F11`: Toggle fullscreen mode
+- `Shift+F11`: Toggle borderless windowed mode
 - Standard game shortcuts remain unchanged
 
 ## Configuration

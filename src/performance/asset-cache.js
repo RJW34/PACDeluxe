@@ -158,7 +158,7 @@ export class AssetCache {
             batch.map(url => this._prewarmUrl(url))
           );
 
-          results.forEach((result, idx) => {
+          results.forEach((result, _idx) => {
             if (result.status === 'fulfilled' && result.value) {
               success++;
               this.stats.prewarmed++;
@@ -741,7 +741,7 @@ export function discoverPageAssets() {
   document.querySelectorAll('[style*="background"]').forEach(el => {
     const style = el.getAttribute('style') || '';
     const match = style.match(/url\(['"]?([^'"()]+)['"]?\)/);
-    if (match && match[1] && !match[1].startsWith('data:')) {
+    if (match?.[1] && !match[1].startsWith('data:')) {
       assets.add(match[1]);
     }
   });

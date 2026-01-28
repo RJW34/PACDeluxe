@@ -100,6 +100,9 @@ export class ProfilingOverlay {
     this.lastGpuStats = null;
     this.gpuUpdateCounter = 0;
     this.gpuUpdateInterval = 5;
+
+    // Bound keyboard handler for cleanup
+    this._keyboardHandler = null;
   }
 
   /**
@@ -118,7 +121,7 @@ export class ProfilingOverlay {
   calculateStdDev(values) {
     if (values.length < 2) return 0;
     const mean = values.reduce((a, b) => a + b, 0) / values.length;
-    const squaredDiffs = values.map(v => Math.pow(v - mean, 2));
+    const squaredDiffs = values.map(v => (v - mean) ** 2);
     const avgSquaredDiff = squaredDiffs.reduce((a, b) => a + b, 0) / values.length;
     return Math.sqrt(avgSquaredDiff);
   }
@@ -368,7 +371,7 @@ export class ProfilingOverlay {
    * Handle mouse up - end drag and snap to corner
    * @param {MouseEvent} e
    */
-  _handleMouseUp(e) {
+  _handleMouseUp(_e) {
     if (!this.isDragging) return;
 
     this.isDragging = false;
@@ -500,6 +503,9 @@ export class ProfilingOverlay {
     // Load and apply saved position
     this.currentDock = this.loadPosition();
     this.applyDockPosition(this.currentDock);
+
+    // Install keyboard shortcut handler
+    this._installKeyboardHandler();
 
     console.log(`[ProfilingOverlay] Initialized (docked: ${this.currentDock})`);
   }
@@ -1105,10 +1111,38 @@ export class ProfilingOverlay {
   }
 
   /**
+   * Install keyboard shortcut handler (Ctrl+Shift+P)
+   */
+  _installKeyboardHandler() {
+    if (this._keyboardHandler) return; // Already installed
+
+    this._keyboardHandler = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        this.toggle();
+      }
+    };
+    document.addEventListener('keydown', this._keyboardHandler);
+  }
+
+  /**
+   * Remove keyboard shortcut handler
+   */
+  _removeKeyboardHandler() {
+    if (this._keyboardHandler) {
+      document.removeEventListener('keydown', this._keyboardHandler);
+      this._keyboardHandler = null;
+    }
+  }
+
+  /**
    * Destroy the overlay
    */
   destroy() {
     this.stopUpdating();
+
+    // Clean up keyboard handler
+    this._removeKeyboardHandler();
 
     // Clean up drag event listeners
     document.removeEventListener('mousemove', this._onMouseMove);
@@ -1144,13 +1178,5 @@ export class ProfilingOverlay {
 // Singleton instance
 export const profilingOverlay = new ProfilingOverlay();
 
-// Keyboard shortcut to toggle overlay (Ctrl+Shift+P)
-if (typeof window !== 'undefined') {
-  document.addEventListener('keydown', (e) => {
-    // Ctrl+Shift+P to toggle overlay (avoids F12 dev tools conflict)
-    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p') {
-      e.preventDefault();
-      profilingOverlay.toggle();
-    }
-  });
-}
+// Note: Keyboard shortcut (Ctrl+Shift+P) is installed during init() and cleaned up in destroy()
+// This prevents memory leaks from orphaned event listeners

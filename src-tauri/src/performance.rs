@@ -383,6 +383,7 @@ impl GpuMonitor {
     }
 
     /// Check if GPU monitoring is available
+    #[allow(dead_code)]
     pub fn is_available(&self) -> bool {
         self.is_initialized
     }
@@ -690,6 +691,7 @@ pub fn get_hdr_info() -> HdrInfo {
 }
 
 /// Refresh HDR info (call when display settings change)
+#[allow(dead_code)]
 pub fn refresh_hdr_info() -> HdrInfo {
     let new_info = detect_hdr_info();
 

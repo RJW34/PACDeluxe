@@ -44,6 +44,10 @@ export class InputOptimizer {
     // MessageChannel for high-priority callbacks
     this.messageChannel = null;
     this.pendingCallbacks = [];
+
+    // Store bound event handlers for cleanup
+    /** @type {Array<{target: EventTarget, type: string, handler: Function, options: object}>} */
+    this._eventListeners = [];
   }
 
   /**
@@ -109,12 +113,24 @@ export class InputOptimizer {
   }
 
   /**
+   * Add event listener and store reference for cleanup
+   * @param {EventTarget} target
+   * @param {string} type
+   * @param {Function} handler
+   * @param {object} options
+   */
+  _addTrackedListener(target, type, handler, options) {
+    target.addEventListener(type, handler, options);
+    this._eventListeners.push({ target, type, handler, options });
+  }
+
+  /**
    * Install event coalescing for high-frequency events
    * This reduces processing overhead by batching rapid-fire events
    */
   installEventCoalescing() {
     // Coalesce mousemove events
-    document.addEventListener('mousemove', (e) => {
+    const mouseMoveHandler = (e) => {
       this.eventCount++;
 
       // If we have getCoalescedEvents, use it for smoothest tracking
@@ -128,14 +144,15 @@ export class InputOptimizer {
       // Store latest event, process on next frame
       this.pendingMouseMove = e;
       this.scheduleCoalescedProcessing();
-    }, { passive: true, capture: false });
+    };
+    this._addTrackedListener(document, 'mousemove', mouseMoveHandler, { passive: true, capture: false });
 
     // Coalesce touchmove events
-    document.addEventListener('touchmove', (e) => {
+    const touchMoveHandler = (e) => {
       this.eventCount++;
 
       // Use getCoalescedEvents if available
-      if (e.touches[0] && e.touches[0].getCoalescedEvents) {
+      if (e.touches[0]?.getCoalescedEvents) {
         const coalescedEvents = e.touches[0].getCoalescedEvents();
         if (coalescedEvents.length > 1) {
           this.coalescedCount += coalescedEvents.length - 1;
@@ -144,22 +161,25 @@ export class InputOptimizer {
 
       this.pendingTouchMove = e;
       this.scheduleCoalescedProcessing();
-    }, { passive: true, capture: false });
+    };
+    this._addTrackedListener(document, 'touchmove', touchMoveHandler, { passive: true, capture: false });
 
     // For click/mousedown/mouseup - use high-priority processing
     ['mousedown', 'mouseup', 'click'].forEach(type => {
-      document.addEventListener(type, (e) => {
+      const handler = (e) => {
         this.eventCount++;
         this.measureEventLatency(e);
-      }, { passive: true, capture: true });
+      };
+      this._addTrackedListener(document, type, handler, { passive: true, capture: true });
     });
 
     // For keyboard - high-priority processing
     ['keydown', 'keyup'].forEach(type => {
-      document.addEventListener(type, (e) => {
+      const handler = (e) => {
         this.eventCount++;
         this.measureEventLatency(e);
-      }, { passive: true, capture: true });
+      };
+      this._addTrackedListener(document, type, handler, { passive: true, capture: true });
     });
   }
 
@@ -192,10 +212,44 @@ export class InputOptimizer {
   installLatencyTracking() {
     // Track pointer events if available (better precision)
     if (typeof PointerEvent !== 'undefined') {
-      document.addEventListener('pointerdown', (e) => {
+      const pointerDownHandler = (e) => {
         this.measureEventLatency(e);
-      }, { passive: true, capture: true });
+      };
+      this._addTrackedListener(document, 'pointerdown', pointerDownHandler, { passive: true, capture: true });
     }
+  }
+
+  /**
+   * Clean up all resources and event listeners
+   * Call this when the optimizer is no longer needed
+   */
+  destroy() {
+    // Remove all tracked event listeners
+    for (const { target, type, handler, options } of this._eventListeners) {
+      target.removeEventListener(type, handler, options);
+    }
+    this._eventListeners = [];
+
+    // Cancel any pending animation frame
+    if (this.coalescingFrameId !== null) {
+      cancelAnimationFrame(this.coalescingFrameId);
+      this.coalescingFrameId = null;
+    }
+
+    // Close message channel
+    if (this.messageChannel) {
+      this.messageChannel.port1.close();
+      this.messageChannel.port2.close();
+      this.messageChannel = null;
+    }
+
+    // Clear pending state
+    this.pendingMouseMove = null;
+    this.pendingTouchMove = null;
+    this.pendingCallbacks = [];
+    this.isInitialized = false;
+
+    console.log('[InputOptimizer] Destroyed and cleaned up all event listeners');
   }
 
   /**
