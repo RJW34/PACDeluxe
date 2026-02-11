@@ -8,6 +8,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 use sysinfo::{System, Pid};
 use tracing::{debug, info, warn};
+
+#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 #[cfg(target_os = "windows")]
@@ -786,24 +788,21 @@ pub fn apply_system_optimizations() {
 pub fn apply_system_optimizations() {
     info!("Applying Linux performance optimizations");
 
-    // Set process priority using nice (requires no special permissions for lowering priority)
-    // Nice values: -20 (highest priority) to 19 (lowest priority), 0 is default
-    // Increasing priority (negative nice) requires CAP_SYS_NICE capability
-    use nix::unistd::nice;
+    // Nice values: -20 (highest priority) to 19 (lowest priority), 0 is default.
+    // Increasing priority (negative nice) requires CAP_SYS_NICE capability.
+    let target_nice = -5;
+    let result = unsafe { nix::libc::setpriority(nix::libc::PRIO_PROCESS, 0, target_nice) };
 
-    // Try to increase priority by decreasing nice value
-    // This will likely fail without elevated permissions, which is expected
-    match nice(-5) {
-        Ok(new_nice) => {
-            info!("Set process nice value to {} (elevated priority)", new_nice);
-        }
-        Err(e) => {
-            // This is expected to fail without CAP_SYS_NICE
-            debug!("Could not set elevated priority (requires CAP_SYS_NICE or root): {:?}", e);
-            // On Linux, we can't elevate priority without special permissions
-            // The app will run at normal priority, which is fine
-            info!("Running at normal priority (elevated priority requires CAP_SYS_NICE)");
-        }
+    if result == 0 {
+        info!("Set process nice value to {} (elevated priority)", target_nice);
+    } else {
+        let e = std::io::Error::last_os_error();
+        // This is expected to fail without CAP_SYS_NICE.
+        debug!(
+            "Could not set elevated priority (requires CAP_SYS_NICE or root): {:?}",
+            e
+        );
+        info!("Running at normal priority (elevated priority requires CAP_SYS_NICE)");
     }
 
     info!("Linux optimizations applied (DPI/scaling handled by window manager)");
