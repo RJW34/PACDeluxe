@@ -17,9 +17,43 @@ const __dirname = dirname(__filename);
 const ROOT = join(__dirname, '..');
 const UPSTREAM_DIR = join(ROOT, 'upstream-game');
 const DIST_DIR = join(ROOT, 'dist');
+const GAME_CONTAINER_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'game',
+  'game-container.ts'
+);
 
 function log(msg) {
   console.log(`[build] ${msg}`);
+}
+
+function applyUpstreamPatches() {
+  if (!existsSync(GAME_CONTAINER_FILE)) {
+    throw new Error(`Upstream file missing: ${GAME_CONTAINER_FILE}`);
+  }
+
+  const resizeHook = 'this.game.scale.on("resize", this.resize, this)';
+  const startupResizeHook = `${resizeHook}\n    this.resize()`;
+  const gameContainerContent = readFileSync(GAME_CONTAINER_FILE, 'utf-8');
+
+  if (gameContainerContent.includes(startupResizeHook)) {
+    return;
+  }
+
+  if (!gameContainerContent.includes(resizeHook)) {
+    throw new Error(
+      'Unable to apply upstream patch: resize hook marker was not found in game-container.ts'
+    );
+  }
+
+  writeFileSync(
+    GAME_CONTAINER_FILE,
+    gameContainerContent.replace(resizeHook, startupResizeHook)
+  );
+  log('Applied upstream patch: force initial Phaser resize');
 }
 
 async function main() {
@@ -29,6 +63,8 @@ async function main() {
   if (!existsSync(join(UPSTREAM_DIR, 'package.json'))) {
     throw new Error('Upstream not found. Run: npm run sync-upstream');
   }
+
+  applyUpstreamPatches();
 
   // Build the client
   log('Building upstream client...');
