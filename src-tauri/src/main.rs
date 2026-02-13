@@ -190,7 +190,9 @@ const OVERLAY_SCRIPT: &str = r#"
                 max-height: 100vh !important;
             }
             /* Fix game container to prevent horizontal overflow */
-            #game, #game-wrapper {
+            /* Note: #game-wrapper must NOT have overflow:hidden - the sidebar
+               is positioned at left:-60px inside it and would be clipped */
+            #game {
                 max-width: 100% !important;
                 overflow: hidden !important;
             }
