@@ -650,6 +650,26 @@ const OVERLAY_SCRIPT: &str = r#"
         (function dynamicBoosterButton() {
             let isUpdating = false;
 
+            // Intercept "Flip All" clicks at document level (capture phase)
+            // so we fire BEFORE React's delegated listener on #root.
+            // This prevents React from processing the click as "Open a Booster"
+            // (which would close the page when 0 boosters remain).
+            document.addEventListener('click', (e) => {
+                const boostersPage = document.getElementById('boosters-page');
+                if (!boostersPage) return;
+                const btn = e.target.closest('button.bubbly');
+                if (!btn || btn.textContent !== 'Flip All' || !boostersPage.contains(btn)) return;
+
+                e.stopPropagation();
+                e.preventDefault();
+
+                const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
+                if (unflippedCards.length > 0) {
+                    console.log('[PACDeluxe] Flipping ' + unflippedCards.length + ' cards...');
+                    unflippedCards.forEach(card => card.click());
+                }
+            }, true);
+
             function updateButtonText() {
                 if (isUpdating) return;
 
@@ -658,24 +678,6 @@ const OVERLAY_SCRIPT: &str = r#"
 
                 const openBoosterBtn = boostersPage.querySelector('button.bubbly');
                 if (!openBoosterBtn) return;
-
-                // Add click listener if not already present
-                if (!openBoosterBtn.dataset.pacListener) {
-                    openBoosterBtn.dataset.pacListener = 'true';
-                    openBoosterBtn.addEventListener('click', (e) => {
-                        if (openBoosterBtn.textContent === 'Flip All') {
-                            // Find all unflipped cards and click them
-                            const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
-                            if (unflippedCards.length > 0) {
-                                console.log('[PACDeluxe] Flipping ' + unflippedCards.length + ' cards...');
-                                unflippedCards.forEach(card => {
-                                    card.click();
-                                });
-                                e.stopImmediatePropagation();
-                            }
-                        }
-                    }, true);
-                }
 
                 // Check for unflipped cards
                 const boosterCards = boostersPage.querySelectorAll('.booster-card');

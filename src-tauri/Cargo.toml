@@ -1,6 +1,6 @@
 [package]
 name = "pac-deluxe"
-version = "1.5.4"
+version = "1.5.5"
 description = "Native performance client for Pokemon Auto Chess"
 authors = ["PACDeluxe Contributors"]
 edition = "2021"
