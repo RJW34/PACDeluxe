@@ -148,6 +148,11 @@ const OVERLAY_SCRIPT: &str = r#"
             return;
         }
 
+        // Safe localStorage wrapper (setItem can throw QuotaExceededError)
+        function lsSet(key, value) {
+            try { lsSet(key, value); } catch(e) {}
+        }
+
         // === SCROLLBAR BUG FIX ===
         // Hide all scrollbars and fix viewport sizing issues
         // Problem: 100vh/100vw can cause overflow due to browser UI
@@ -201,22 +206,15 @@ const OVERLAY_SCRIPT: &str = r#"
         console.log('[PACDeluxe] Scrollbar/viewport fix applied');
 
         // === CONTEXT MENU FIX ===
-        // Disable default WebView2 context menu only on game canvas to prevent interference
-        // (Tier list maker uses mouse events that conflict with context menu)
-        // Note: We target canvas specifically to avoid breaking tooltips and other UI
-        function disableCanvasContextMenu() {
-            const canvas = document.querySelector('canvas');
-            if (canvas && !canvas._pacContextMenuDisabled) {
-                canvas.addEventListener('contextmenu', (e) => {
-                    e.preventDefault();
-                });
-                canvas._pacContextMenuDisabled = true;
-                console.log('[PACDeluxe] Canvas context menu disabled');
+        // Disable default WebView2 context menu on canvas elements.
+        // Uses event delegation on document so it works even if Phaser
+        // recreates the canvas - no setInterval, no duplicate listeners.
+        document.addEventListener('contextmenu', (e) => {
+            if (e.target && e.target.tagName === 'CANVAS') {
+                e.preventDefault();
             }
-        }
-        disableCanvasContextMenu();
-        // Re-check periodically as Phaser may recreate canvas
-        setInterval(disableCanvasContextMenu, 2000);
+        });
+        console.log('[PACDeluxe] Canvas context menu disabled');
 
         // === ASSET CACHE WITH VERSION CHECK ===
         // Intercepts fetch() for static assets (images, JSON, audio)
@@ -232,7 +230,7 @@ const OVERLAY_SCRIPT: &str = r#"
                 console.log('[PACDeluxe] Version changed (' + storedVersion + ' -> ' + currentVersion + '), clearing cache');
                 localStorage.removeItem(CACHE_ASSETS_KEY);
             }
-            localStorage.setItem(CACHE_VERSION_KEY, currentVersion);
+            lsSet(CACHE_VERSION_KEY, currentVersion);
 
             // Patterns for cacheable assets
             const cacheablePatterns = [
@@ -287,7 +285,7 @@ const OVERLAY_SCRIPT: &str = r#"
             setTimeout(() => {
                 const urls = Array.from(cache.keys()).slice(0, 500);
                 if (urls.length > 0) {
-                    localStorage.setItem(CACHE_ASSETS_KEY, JSON.stringify(urls));
+                    lsSet(CACHE_ASSETS_KEY, JSON.stringify(urls));
                     console.log('[PACDeluxe] Recorded ' + urls.length + ' assets for prewarm');
                 }
             }, 30000);
@@ -390,7 +388,7 @@ const OVERLAY_SCRIPT: &str = r#"
             const rect = overlay.getBoundingClientRect();
 
             // Persist position as x,y coordinates
-            localStorage.setItem('pac_overlay_pos', JSON.stringify({
+            lsSet('pac_overlay_pos', JSON.stringify({
                 x: rect.left,
                 y: rect.top
             }));
@@ -559,7 +557,7 @@ const OVERLAY_SCRIPT: &str = r#"
                 e.preventDefault();
                 visible = !visible;
                 overlay.style.display = visible ? 'block' : 'none';
-                localStorage.setItem('pac_overlay_visible', visible);
+                lsSet('pac_overlay_visible', visible);
                 if (visible) updateOverlay();
             }
             // Shift+F11 for borderless windowed
@@ -648,8 +646,6 @@ const OVERLAY_SCRIPT: &str = r#"
         // Changes the "Open Booster" button text to "Flip All" when cards are unflipped
         // Also attaches click logic to flip all cards when the button is in "Flip All" state
         (function dynamicBoosterButton() {
-            let isUpdating = false;
-
             // Intercept "Flip All" clicks at document level (capture phase)
             // so we fire BEFORE React's delegated listener on #root.
             // This prevents React from processing the click as "Open a Booster"
@@ -671,47 +667,31 @@ const OVERLAY_SCRIPT: &str = r#"
             }, true);
 
             function updateButtonText() {
-                if (isUpdating) return;
-
                 const boostersPage = document.getElementById('boosters-page');
                 if (!boostersPage) return;
 
                 const openBoosterBtn = boostersPage.querySelector('button.bubbly');
                 if (!openBoosterBtn) return;
 
-                // Check for unflipped cards
                 const boosterCards = boostersPage.querySelectorAll('.booster-card');
                 const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
-
                 const shouldShowFlipAll = boosterCards.length > 0 && unflippedCards.length > 0;
-                const currentlyShowsFlipAll = openBoosterBtn.textContent === 'Flip All';
 
-                if (shouldShowFlipAll && !currentlyShowsFlipAll) {
-                    isUpdating = true;
-                    openBoosterBtn.textContent = 'Flip All';
+                if (shouldShowFlipAll) {
+                    if (openBoosterBtn.textContent !== 'Flip All') {
+                        openBoosterBtn.textContent = 'Flip All';
+                    }
+                    openBoosterBtn.disabled = false;
                     if (!openBoosterBtn.classList.contains('blue')) {
                         openBoosterBtn.classList.add('blue');
                     }
-                    openBoosterBtn.disabled = false;
-                    isUpdating = false;
-                } else if (!shouldShowFlipAll && currentlyShowsFlipAll) {
-                    isUpdating = true;
+                } else if (openBoosterBtn.textContent === 'Flip All') {
                     openBoosterBtn.textContent = 'Open a Booster';
-                    if (openBoosterBtn.classList.contains('blue')) {
-                        openBoosterBtn.classList.remove('blue');
-                    }
-                    isUpdating = false;
-                } else if (shouldShowFlipAll && (openBoosterBtn.disabled || !openBoosterBtn.classList.contains('blue'))) {
-                    isUpdating = true;
-                    openBoosterBtn.disabled = false;
-                    if (!openBoosterBtn.classList.contains('blue')) {
-                        openBoosterBtn.classList.add('blue');
-                    }
-                    isUpdating = false;
+                    openBoosterBtn.classList.remove('blue');
                 }
             }
 
-            setInterval(updateButtonText, 250);
+            setInterval(updateButtonText, 500);
             console.log('[PACDeluxe] Dynamic booster button ready');
         })();
 

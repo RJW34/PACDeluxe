@@ -101,11 +101,11 @@ pub struct ElevationTelemetry {
 /// Get current WebView2 elevation telemetry (Windows)
 #[cfg(target_os = "windows")]
 pub fn get_elevation_telemetry() -> ElevationTelemetry {
-    let wmi_active = WMI_WATCHER_ACTIVE.load(Ordering::Relaxed);
-    let optimizer_running = WEBVIEW_OPTIMIZER_RUNNING.load(Ordering::Relaxed);
+    let wmi_active = WMI_WATCHER_ACTIVE.load(Ordering::SeqCst);
+    let optimizer_running = WEBVIEW_OPTIMIZER_RUNNING.load(Ordering::SeqCst);
 
     ElevationTelemetry {
-        processes_elevated: PROCESSES_ELEVATED.load(Ordering::Relaxed),
+        processes_elevated: PROCESSES_ELEVATED.load(Ordering::SeqCst),
         mode: if wmi_active { "wmi".to_string() } else { "polling".to_string() },
         is_active: optimizer_running,
         wmi_available: wmi_active,
@@ -879,7 +879,7 @@ fn start_wmi_process_watcher() -> bool {
         let com = match COMLibrary::new() {
             Ok(c) => c,
             Err(e) => {
-                debug!("Failed to initialize COM library: {:?}", e);
+                warn!("Failed to initialize COM library: {:?}", e);
                 let _ = tx.send(false);
                 return;
             }
@@ -889,7 +889,7 @@ fn start_wmi_process_watcher() -> bool {
         let wmi_con = match WMIConnection::new(com) {
             Ok(w) => w,
             Err(e) => {
-                debug!("Failed to connect to WMI: {:?}", e);
+                warn!("Failed to connect to WMI: {:?}", e);
                 let _ = tx.send(false);
                 return;
             }
@@ -903,7 +903,7 @@ fn start_wmi_process_watcher() -> bool {
         let mut iter = match iter_result {
             Ok(i) => i,
             Err(e) => {
-                debug!("WMI notification subscription failed: {:?}", e);
+                warn!("WMI notification subscription failed: {:?}", e);
                 let _ = tx.send(false);
                 return;
             }
@@ -989,7 +989,7 @@ fn elevate_single_process(pid: u32) -> bool {
                 success = true;
 
                 // Increment telemetry counter
-                PROCESSES_ELEVATED.fetch_add(1, Ordering::Relaxed);
+                PROCESSES_ELEVATED.fetch_add(1, Ordering::SeqCst);
             }
 
             // Disable priority boost for consistent timing
