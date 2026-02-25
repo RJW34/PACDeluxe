@@ -642,57 +642,93 @@ const OVERLAY_SCRIPT: &str = r#"
             console.log('[PACDeluxe] Session recovery monitor active');
         })();
 
-        // === DYNAMIC BOOSTER BUTTON TEXT & LOGIC ===
-        // Changes the "Open Booster" button text to "Flip All" when cards are unflipped
-        // Also attaches click logic to flip all cards when the button is in "Flip All" state
+        // === BOOSTER "FLIP ALL" BUTTON ===
+        // Adds a dedicated "Flip All" button instead of replacing "Open a Booster".
+        // This keeps the original open-pack behavior and avoids modal close side effects.
         (function dynamicBoosterButton() {
-            // Intercept "Flip All" clicks at document level (capture phase)
-            // so we fire BEFORE React's delegated listener on #root.
-            // This prevents React from processing the click as "Open a Booster"
-            // (which would close the page when 0 boosters remain).
-            document.addEventListener('click', (e) => {
-                const boostersPage = document.getElementById('boosters-page');
-                if (!boostersPage) return;
-                const btn = e.target.closest('button.bubbly');
-                if (!btn || btn.textContent !== 'Flip All' || !boostersPage.contains(btn)) return;
+            const FLIP_ALL_BUTTON_ID = 'pac-flip-all-btn';
 
-                e.stopPropagation();
-                e.preventDefault();
-
+            function flipAllCards(boostersPage) {
                 const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
-                if (unflippedCards.length > 0) {
-                    console.log('[PACDeluxe] Flipping ' + unflippedCards.length + ' cards...');
-                    unflippedCards.forEach(card => card.click());
-                }
-            }, true);
+                if (unflippedCards.length === 0) return;
 
-            function updateButtonText() {
+                console.log('[PACDeluxe] Flipping ' + unflippedCards.length + ' cards...');
+
+                // Use pointer coordinates inside each card so the modal outside-click
+                // handler does not interpret these synthetic clicks as backdrop clicks.
+                unflippedCards.forEach((card) => {
+                    const rect = card.getBoundingClientRect();
+                    const clickEvent = new MouseEvent('click', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: rect.left + (rect.width / 2),
+                        clientY: rect.top + (rect.height / 2)
+                    });
+                    card.dispatchEvent(clickEvent);
+                });
+            }
+
+            function ensureFlipAllButton(actions, openBoosterBtn) {
+                let flipAllBtn = actions.querySelector('#' + FLIP_ALL_BUTTON_ID);
+
+                if (!flipAllBtn) {
+                    flipAllBtn = document.createElement('button');
+                    flipAllBtn.id = FLIP_ALL_BUTTON_ID;
+                    flipAllBtn.type = 'button';
+                    flipAllBtn.className = 'bubbly blue';
+                    flipAllBtn.textContent = 'Flip All';
+                    flipAllBtn.style.position = 'absolute';
+                    flipAllBtn.style.display = 'none';
+                    flipAllBtn.style.zIndex = '1';
+                    flipAllBtn.style.margin = '0';
+
+                    flipAllBtn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+
+                        const boostersPage = document.getElementById('boosters-page');
+                        if (!boostersPage) return;
+
+                        flipAllCards(boostersPage);
+                    });
+
+                    actions.appendChild(flipAllBtn);
+                }
+
+                const actionsRect = actions.getBoundingClientRect();
+                const openBtnRect = openBoosterBtn.getBoundingClientRect();
+
+                // Place Flip All directly to the left of Open Booster with ~50px spacing.
+                flipAllBtn.style.left = (openBtnRect.left - actionsRect.left - 50) + 'px';
+                flipAllBtn.style.top = (openBtnRect.top - actionsRect.top + (openBtnRect.height / 2)) + 'px';
+                flipAllBtn.style.transform = 'translate(-100%, -50%)';
+
+                return flipAllBtn;
+            }
+
+            function updateFlipAllButton() {
                 const boostersPage = document.getElementById('boosters-page');
                 if (!boostersPage) return;
 
-                const openBoosterBtn = boostersPage.querySelector('button.bubbly');
+                const actions = boostersPage.querySelector('.actions');
+                if (!actions) return;
+
+                const openBoosterBtn = actions.querySelector('button.bubbly:not(#' + FLIP_ALL_BUTTON_ID + ')');
                 if (!openBoosterBtn) return;
 
                 const boosterCards = boostersPage.querySelectorAll('.booster-card');
                 const unflippedCards = boostersPage.querySelectorAll('.booster-card:not(.flipped)');
                 const shouldShowFlipAll = boosterCards.length > 0 && unflippedCards.length > 0;
 
-                if (shouldShowFlipAll) {
-                    if (openBoosterBtn.textContent !== 'Flip All') {
-                        openBoosterBtn.textContent = 'Flip All';
-                    }
-                    openBoosterBtn.disabled = false;
-                    if (!openBoosterBtn.classList.contains('blue')) {
-                        openBoosterBtn.classList.add('blue');
-                    }
-                } else if (openBoosterBtn.textContent === 'Flip All') {
-                    openBoosterBtn.textContent = 'Open a Booster';
-                    openBoosterBtn.classList.remove('blue');
-                }
+                const flipAllBtn = ensureFlipAllButton(actions, openBoosterBtn);
+                flipAllBtn.style.display = shouldShowFlipAll ? '' : 'none';
+                flipAllBtn.disabled = !shouldShowFlipAll;
             }
 
-            setInterval(updateButtonText, 500);
-            console.log('[PACDeluxe] Dynamic booster button ready');
+            updateFlipAllButton();
+            setInterval(updateFlipAllButton, 250);
+            console.log('[PACDeluxe] Booster Flip All button ready');
         })();
 
         // === AUTO-UPDATER ===

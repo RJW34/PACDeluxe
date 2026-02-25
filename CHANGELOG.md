@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-02-25
+
+### Fixed
+- Fixed booster modal closing immediately when clicking `Flip All`
+- `Flip All` now appears as a dedicated button to the left of `Open a Booster` instead of replacing it
+
 ## [1.2.7] - 2026-01-13
 
 ### Added
@@ -115,7 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auth popup doesn't auto-close after login
 - GPU monitoring not available (requires vendor-specific SDKs)
 
-[Unreleased]: https://github.com/RJW34/PACDeluxe/compare/v1.2.7...HEAD
+[Unreleased]: https://github.com/RJW34/PACDeluxe/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/RJW34/PACDeluxe/compare/v1.6.0...v1.6.1
 [1.2.7]: https://github.com/RJW34/PACDeluxe/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/RJW34/PACDeluxe/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/RJW34/PACDeluxe/compare/v1.2.4...v1.2.5
