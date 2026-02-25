@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-02-25
+
+### Added
+- Added a booster modal `Equip` button (yellow theme) for newly unlocked avatar-compatible cards
+- `Equip` now immediately applies the selected booster card as player avatar through the existing backend avatar flow
+
+### Fixed
+- Fixed injected localStorage persistence helper recursion that could break overlay/settings persistence
+- Hardened fullscreen/borderless hotkey handling to prevent rapid F11 repeat/race issues
+
 ## [1.6.1] - 2026-02-25
 
 ### Fixed
@@ -121,7 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auth popup doesn't auto-close after login
 - GPU monitoring not available (requires vendor-specific SDKs)
 
-[Unreleased]: https://github.com/RJW34/PACDeluxe/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/RJW34/PACDeluxe/compare/v1.6.2...HEAD
+[1.6.2]: https://github.com/RJW34/PACDeluxe/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/RJW34/PACDeluxe/compare/v1.6.0...v1.6.1
 [1.2.7]: https://github.com/RJW34/PACDeluxe/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/RJW34/PACDeluxe/compare/v1.2.5...v1.2.6
