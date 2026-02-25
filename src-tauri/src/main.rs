@@ -150,7 +150,7 @@ const OVERLAY_SCRIPT: &str = r#"
 
         // Safe localStorage wrapper (setItem can throw QuotaExceededError)
         function lsSet(key, value) {
-            try { lsSet(key, value); } catch(e) {}
+            try { localStorage.setItem(key, value); } catch(e) {}
         }
 
         // === SCROLLBAR BUG FIX ===
@@ -552,6 +552,7 @@ const OVERLAY_SCRIPT: &str = r#"
         // Toggle overlay with Ctrl+Shift+P
         // Toggle fullscreen with F11
         // Toggle borderless windowed with Shift+F11
+        let windowModeChanging = false;
         document.addEventListener('keydown', async e => {
             if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p') {
                 e.preventDefault();
@@ -560,25 +561,35 @@ const OVERLAY_SCRIPT: &str = r#"
                 lsSet('pac_overlay_visible', visible);
                 if (visible) updateOverlay();
             }
+            if (e.key === 'F11' && e.repeat) {
+                e.preventDefault();
+                return;
+            }
             // Shift+F11 for borderless windowed
             if (e.shiftKey && e.key === 'F11') {
                 e.preventDefault();
+                if (windowModeChanging) return;
                 if (window.__TAURI__) {
+                    windowModeChanging = true;
                     try {
                         const currentMode = await window.__TAURI__.core.invoke('get_window_mode');
                         const newMode = currentMode === 'BorderlessWindowed' ? 'Windowed' : 'BorderlessWindowed';
                         await window.__TAURI__.core.invoke('set_window_mode', { mode: newMode });
                         console.log('[PACDeluxe] Window mode:', newMode);
                     } catch(e) { console.error('[PACDeluxe] Borderless error:', e); }
+                    finally { windowModeChanging = false; }
                 }
             }
             // F11 for exclusive fullscreen (only if Shift not pressed)
             else if (e.key === 'F11' && !e.shiftKey) {
                 e.preventDefault();
+                if (windowModeChanging) return;
                 if (window.__TAURI__) {
+                    windowModeChanging = true;
                     try {
                         await window.__TAURI__.core.invoke('toggle_fullscreen');
                     } catch(e) { console.error('[PACDeluxe] Fullscreen error:', e); }
+                    finally { windowModeChanging = false; }
                 }
             }
         });

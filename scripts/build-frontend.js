@@ -25,9 +25,26 @@ const GAME_CONTAINER_FILE = join(
   'game',
   'game-container.ts'
 );
+const BOOSTER_COMPONENT_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'pages',
+  'component',
+  'booster',
+  'booster.tsx'
+);
 
 function log(msg) {
   console.log(`[build] ${msg}`);
+}
+
+function replaceOrThrow(content, search, replacement, label) {
+  if (!content.includes(search)) {
+    throw new Error(`Unable to apply upstream patch (${label}): marker not found`);
+  }
+  return content.replace(search, replacement);
 }
 
 function applyUpstreamPatches() {
@@ -39,21 +56,95 @@ function applyUpstreamPatches() {
   const startupResizeHook = `${resizeHook}\n    this.resize()`;
   const gameContainerContent = readFileSync(GAME_CONTAINER_FILE, 'utf-8');
 
-  if (gameContainerContent.includes(startupResizeHook)) {
-    return;
-  }
+  if (!gameContainerContent.includes(startupResizeHook)) {
+    if (!gameContainerContent.includes(resizeHook)) {
+      throw new Error(
+        'Unable to apply upstream patch: resize hook marker was not found in game-container.ts'
+      );
+    }
 
-  if (!gameContainerContent.includes(resizeHook)) {
-    throw new Error(
-      'Unable to apply upstream patch: resize hook marker was not found in game-container.ts'
+    writeFileSync(
+      GAME_CONTAINER_FILE,
+      gameContainerContent.replace(resizeHook, startupResizeHook)
     );
+    log('Applied upstream patch: force initial Phaser resize');
   }
 
-  writeFileSync(
-    GAME_CONTAINER_FILE,
-    gameContainerContent.replace(resizeHook, startupResizeHook)
-  );
-  log('Applied upstream patch: force initial Phaser resize');
+  if (!existsSync(BOOSTER_COMPONENT_FILE)) {
+    throw new Error(`Upstream file missing: ${BOOSTER_COMPONENT_FILE}`);
+  }
+
+  let boosterContent = readFileSync(BOOSTER_COMPONENT_FILE, 'utf-8')
+    .replace(/\r\n/g, '\n');
+
+  if (!boosterContent.includes('function onClickEquip()')) {
+    boosterContent = replaceOrThrow(
+      boosterContent,
+      'import { useTranslation } from "react-i18next"\n',
+      'import { useTranslation } from "react-i18next"\n' +
+        'import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n' +
+        'import { PkmIndex } from "../../../../../types/enum/Pokemon"\n',
+      'booster import hooks'
+    );
+
+    boosterContent = replaceOrThrow(
+      boosterContent,
+      'import { openBooster } from "../../../stores/NetworkStore"\n',
+      'import { changeAvatar, openBooster } from "../../../stores/NetworkStore"\n',
+      'booster network import'
+    );
+
+    boosterContent = replaceOrThrow(
+      boosterContent,
+      '  const [loading, setLoading] = useState(false)\n',
+      '  const [loading, setLoading] = useState(false)\n' +
+        '  const equipableCard = boosterContent.find(\n' +
+        '    (card, index) =>\n' +
+        '      flippedStates[index] &&\n' +
+        '      card.new &&\n' +
+        '      AvatarEmotions.includes(card.emotion)\n' +
+        '  )\n',
+      'booster equipable card state'
+    );
+
+    boosterContent = replaceOrThrow(
+      boosterContent,
+      '  const handleFlip = (index: number) => {\n',
+      '  function onClickEquip() {\n' +
+        '    if (!equipableCard) return\n' +
+        '\n' +
+        '    dispatch(\n' +
+        '      changeAvatar({\n' +
+        '        index: PkmIndex[equipableCard.name],\n' +
+        '        emotion: equipableCard.emotion,\n' +
+        '        shiny: equipableCard.shiny\n' +
+        '      })\n' +
+        '    )\n' +
+        '  }\n' +
+        '\n' +
+        '  const handleFlip = (index: number) => {\n',
+      'booster equip click handler'
+    );
+
+    boosterContent = replaceOrThrow(
+      boosterContent,
+      '          {t("open_booster")}\n' +
+        '        </button>\n' +
+        '        <span className="booster-count">{numberOfBooster}</span>\n',
+      '          {t("open_booster")}\n' +
+        '        </button>\n' +
+        '        {equipableCard && (\n' +
+        '          <button className="bubbly orange" onClick={onClickEquip}>\n' +
+        '            Equip\n' +
+        '          </button>\n' +
+        '        )}\n' +
+        '        <span className="booster-count">{numberOfBooster}</span>\n',
+      'booster equip button'
+    );
+
+    writeFileSync(BOOSTER_COMPONENT_FILE, boosterContent);
+    log('Applied upstream patch: booster Equip button for new avatar cards');
+  }
 }
 
 async function main() {
