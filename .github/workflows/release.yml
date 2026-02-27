@@ -58,61 +58,18 @@ jobs:
           echo "=== MSI bundle ==="
           dir src-tauri\target\release\bundle\msi\
 
-      - name: Upload to public releases repo
+      - name: Upload Windows release
+        uses: tauri-apps/tauri-action@v0
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-        run: |
-          $tag = "${{ github.ref_name }}"
-          $repo = "RJW34/PACDeluxe-releases"
-
-          # Create release if it doesn't exist
-          gh release view $tag --repo $repo 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --repo $repo --title "PACDeluxe $tag" --notes "See the assets below to download and install this version."
-          }
-
-          # Upload NSIS installer + signature
-          Get-ChildItem src-tauri\target\release\bundle\nsis\*.exe | ForEach-Object {
-            gh release upload $tag $_.FullName --repo $repo --clobber
-          }
-          Get-ChildItem src-tauri\target\release\bundle\nsis\*.sig | ForEach-Object {
-            gh release upload $tag $_.FullName --repo $repo --clobber
-          }
-
-          # Upload MSI installer + signature
-          Get-ChildItem src-tauri\target\release\bundle\msi\*.msi | ForEach-Object {
-            gh release upload $tag $_.FullName --repo $repo --clobber
-          }
-          Get-ChildItem src-tauri\target\release\bundle\msi\*.sig | ForEach-Object {
-            gh release upload $tag $_.FullName --repo $repo --clobber
-          }
-
-      - name: Upload updater JSON
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-        run: |
-          $tag = "${{ github.ref_name }}"
-          $repo = "RJW34/PACDeluxe-releases"
-          $version = $tag.TrimStart("v")
-
-          # Build latest.json with Windows assets pointing to public repo
-          # Linux job will merge its platform in separately
-          $nsisSig = Get-Content "src-tauri\target\release\bundle\nsis\PACDeluxe_${version}_x64-setup.exe.sig" -Raw
-
-          $json = @{
-            version = $version
-            notes = "PACDeluxe $tag"
-            pub_date = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
-            platforms = @{
-              "windows-x86_64" = @{
-                url = "https://github.com/RJW34/PACDeluxe-releases/releases/download/$tag/PACDeluxe_${version}_x64-setup.exe"
-                signature = $nsisSig.Trim()
-              }
-            }
-          } | ConvertTo-Json -Depth 4
-
-          $json | Out-File -FilePath latest.json -Encoding utf8
-          gh release upload $tag latest.json --repo $repo --clobber
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'PACDeluxe ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install this version.'
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          tauriScript: echo "skip"
 
   build-linux:
     runs-on: ubuntu-22.04
@@ -167,46 +124,15 @@ jobs:
           echo "=== AppImage bundle ==="
           ls -la src-tauri/target/release/bundle/appimage/
 
-      - name: Upload to public releases repo
+      - name: Upload Linux release
+        uses: tauri-apps/tauri-action@v0
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-        run: |
-          TAG="${{ github.ref_name }}"
-          REPO="RJW34/PACDeluxe-releases"
-
-          # Create release if it doesn't exist
-          gh release view "$TAG" --repo "$REPO" 2>/dev/null || \
-            gh release create "$TAG" --repo "$REPO" --title "PACDeluxe $TAG" --notes "See the assets below to download and install this version."
-
-          # Upload AppImage + signature
-          for f in src-tauri/target/release/bundle/appimage/*.AppImage src-tauri/target/release/bundle/appimage/*.sig; do
-            [ -f "$f" ] && gh release upload "$TAG" "$f" --repo "$REPO" --clobber
-          done
-
-  update-latest-json:
-    needs: [build-windows, build-linux]
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Download current latest.json and merge Linux platform
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-        run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          REPO="RJW34/PACDeluxe-releases"
-
-          # Download the latest.json uploaded by Windows job
-          gh release download "$TAG" --repo "$REPO" --pattern "latest.json" --dir .
-
-          # Download Linux signature
-          gh release download "$TAG" --repo "$REPO" --pattern "*.AppImage.sig" --dir .
-          LINUX_SIG=$(cat *.AppImage.sig)
-
-          # Merge Linux platform into latest.json
-          jq --arg url "https://github.com/RJW34/PACDeluxe-releases/releases/download/$TAG/PACDeluxe_${VERSION}_amd64.AppImage" \
-             --arg sig "$LINUX_SIG" \
-             '.platforms["linux-x86_64"] = {url: $url, signature: $sig}' latest.json > latest-updated.json
-
-          mv latest-updated.json latest.json
-          gh release upload "$TAG" latest.json --repo "$REPO" --clobber
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'PACDeluxe ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install this version.'
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          tauriScript: echo "skip"
