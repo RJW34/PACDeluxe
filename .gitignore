@@ -66,8 +66,6 @@ fix-*.ps1
 run-dev.ps1
 run-dev.bat
 
-# Development instructions (not user-facing)
-CLAUDE.md
 
 # Dev tooling configs
 biome.json
