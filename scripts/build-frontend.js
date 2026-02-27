@@ -78,21 +78,11 @@ function applyUpstreamPatches() {
     .replace(/\r\n/g, '\n');
 
   if (!boosterContent.includes('function onClickEquip()')) {
-    if (!boosterContent.includes('import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n')) {
+    if (!boosterContent.includes('import { PkmIndex } from "../../../../../types/enum/Pokemon"\n')) {
       boosterContent = replaceOrThrow(
         boosterContent,
         'import { useTranslation } from "react-i18next"\n',
         'import { useTranslation } from "react-i18next"\n' +
-          'import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n',
-        'booster avatar emotions import'
-      );
-    }
-
-    if (!boosterContent.includes('import { PkmIndex } from "../../../../../types/enum/Pokemon"\n')) {
-      boosterContent = replaceOrThrow(
-        boosterContent,
-        'import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n',
-        'import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n' +
           'import { PkmIndex } from "../../../../../types/enum/Pokemon"\n',
         'booster pkm index import'
       );
@@ -124,9 +114,7 @@ function applyUpstreamPatches() {
         boosterContent,
         '  const [loading, setLoading] = useState(false)\n',
         '  const [loading, setLoading] = useState(false)\n' +
-          '  const equipableCard = boosterContent.find(\n' +
-          '    (card) => card.new && AvatarEmotions.includes(card.emotion)\n' +
-          '  )\n',
+          '  const equipableCard = boosterContent.find((card) => card.new)\n',
         'booster equipable card state'
       );
     }
@@ -152,17 +140,9 @@ function applyUpstreamPatches() {
 
     boosterContent = replaceOrThrow(
       boosterContent,
-      '          className={cc("bubbly", { blue: numberOfBooster > 0 })}\n',
-      '          className={cc("bubbly", { blue: numberOfBooster > 0 })}\n' +
-        '          style={{ margin: 0 }}\n',
-      'booster open button margin'
-    );
-
-    boosterContent = replaceOrThrow(
-      boosterContent,
       '        <span className="booster-count">{numberOfBooster}</span>\n',
       '        {equipableCard && (\n' +
-        '          <button className="bubbly orange" onClick={onClickEquip} style={{ margin: 0 }}>\n' +
+        '          <button className="bubbly orange" onClick={onClickEquip} style={{ fontSize: "0.85em" }}>\n' +
         '            Equip\n' +
         '          </button>\n' +
         '        )}\n' +
