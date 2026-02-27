@@ -78,34 +78,58 @@ function applyUpstreamPatches() {
     .replace(/\r\n/g, '\n');
 
   if (!boosterContent.includes('function onClickEquip()')) {
-    boosterContent = replaceOrThrow(
-      boosterContent,
-      'import { useTranslation } from "react-i18next"\n',
-      'import { useTranslation } from "react-i18next"\n' +
+    if (!boosterContent.includes('import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n')) {
+      boosterContent = replaceOrThrow(
+        boosterContent,
+        'import { useTranslation } from "react-i18next"\n',
+        'import { useTranslation } from "react-i18next"\n' +
+          'import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n',
+        'booster avatar emotions import'
+      );
+    }
+
+    if (!boosterContent.includes('import { PkmIndex } from "../../../../../types/enum/Pokemon"\n')) {
+      boosterContent = replaceOrThrow(
+        boosterContent,
+        'import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n',
         'import { AvatarEmotions } from "../../../../../types/enum/Emotion"\n' +
-        'import { PkmIndex } from "../../../../../types/enum/Pokemon"\n',
-      'booster import hooks'
-    );
+          'import { PkmIndex } from "../../../../../types/enum/Pokemon"\n',
+        'booster pkm index import'
+      );
+    }
 
-    boosterContent = replaceOrThrow(
-      boosterContent,
-      'import { openBooster } from "../../../stores/NetworkStore"\n',
-      'import { changeAvatar, openBooster } from "../../../stores/NetworkStore"\n',
-      'booster network import'
-    );
+    if (!boosterContent.includes('changeAvatar')) {
+      if (boosterContent.includes('import { openBooster } from "../../../stores/NetworkStore"\n')) {
+        boosterContent = replaceOrThrow(
+          boosterContent,
+          'import { openBooster } from "../../../stores/NetworkStore"\n',
+          'import { changeAvatar, openBooster } from "../../../stores/NetworkStore"\n',
+          'booster network import legacy'
+        );
+      } else if (boosterContent.includes('import { openBooster } from "../../../network"\n')) {
+        boosterContent = replaceOrThrow(
+          boosterContent,
+          'import { openBooster } from "../../../network"\n',
+          'import { openBooster } from "../../../network"\n' +
+            'import { changeAvatar } from "../../../stores/NetworkStore"\n',
+          'booster network import current'
+        );
+      } else {
+        throw new Error('Unable to apply upstream patch (booster network import): marker not found');
+      }
+    }
 
-    boosterContent = replaceOrThrow(
-      boosterContent,
-      '  const [loading, setLoading] = useState(false)\n',
-      '  const [loading, setLoading] = useState(false)\n' +
-        '  const equipableCard = boosterContent.find(\n' +
-        '    (card, index) =>\n' +
-        '      flippedStates[index] &&\n' +
-        '      card.new &&\n' +
-        '      AvatarEmotions.includes(card.emotion)\n' +
-        '  )\n',
-      'booster equipable card state'
-    );
+    if (!boosterContent.includes('const equipableCard = boosterContent.find(')) {
+      boosterContent = replaceOrThrow(
+        boosterContent,
+        '  const [loading, setLoading] = useState(false)\n',
+        '  const [loading, setLoading] = useState(false)\n' +
+          '  const equipableCard = boosterContent.find(\n' +
+          '    (card) => card.new && AvatarEmotions.includes(card.emotion)\n' +
+          '  )\n',
+        'booster equipable card state'
+      );
+    }
 
     boosterContent = replaceOrThrow(
       boosterContent,
@@ -128,13 +152,17 @@ function applyUpstreamPatches() {
 
     boosterContent = replaceOrThrow(
       boosterContent,
-      '          {t("open_booster")}\n' +
-        '        </button>\n' +
-        '        <span className="booster-count">{numberOfBooster}</span>\n',
-      '          {t("open_booster")}\n' +
-        '        </button>\n' +
-        '        {equipableCard && (\n' +
-        '          <button className="bubbly orange" onClick={onClickEquip}>\n' +
+      '          className={cc("bubbly", { blue: numberOfBooster > 0 })}\n',
+      '          className={cc("bubbly", { blue: numberOfBooster > 0 })}\n' +
+        '          style={{ margin: 0 }}\n',
+      'booster open button margin'
+    );
+
+    boosterContent = replaceOrThrow(
+      boosterContent,
+      '        <span className="booster-count">{numberOfBooster}</span>\n',
+      '        {equipableCard && (\n' +
+        '          <button className="bubbly orange" onClick={onClickEquip} style={{ margin: 0 }}>\n' +
         '            Equip\n' +
         '          </button>\n' +
         '        )}\n' +
