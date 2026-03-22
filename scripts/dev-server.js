@@ -93,6 +93,14 @@ const server = createServer((req, res) => {
   }
 
   const filepath = join(DIST_DIR, pathname);
+
+  // SPA fallback: if the file doesn't exist and the path has no extension,
+  // serve index.html so React Router can handle routes like /lobby, /game
+  if (!existsSync(filepath) && !extname(pathname)) {
+    serveFile(res, join(DIST_DIR, 'index.html'));
+    return;
+  }
+
   serveFile(res, filepath);
 });
 

@@ -57,7 +57,7 @@ scripts/
 npm install && npm run sync-upstream
 cd upstream-game && npm install && cd ..
 npm run build:frontend     # Build game to dist/ with patches
-npm run tauri:dev          # Dev mode
+npm run tauri:dev          # Dev mode (auto-starts dev server on port 1420)
 npm run tauri:build        # Release build
 ```
 Release: push a `v*` tag to trigger `.github/workflows/release.yml` (builds both platforms with signing).

@@ -255,6 +255,29 @@ async function main() {
     cpSync(stylesDir, join(DIST_DIR, 'style'), { recursive: true });
   }
 
+  // Copy locales (i18next translations loaded at runtime via HTTP backend)
+  const localesDir = join(clientDist, 'locales');
+  if (existsSync(localesDir)) {
+    cpSync(localesDir, join(DIST_DIR, 'locales'), { recursive: true });
+    log('Copied locales/');
+  } else {
+    log('Warning: locales/ not found in upstream build output');
+  }
+
+  // Copy pokechess sub-game assets (Gameboy mode)
+  const pokechessDir = join(clientDist, 'pokechess');
+  if (existsSync(pokechessDir)) {
+    cpSync(pokechessDir, join(DIST_DIR, 'pokechess'), { recursive: true });
+    log('Copied pokechess/');
+  }
+
+  // Copy changelog (patch notes markdown files)
+  const changelogDir = join(clientDist, 'changelog');
+  if (existsSync(changelogDir)) {
+    cpSync(changelogDir, join(DIST_DIR, 'changelog'), { recursive: true });
+    log('Copied changelog/');
+  }
+
   // Copy the built JS and CSS
   cpSync(join(clientDist, jsFile), join(DIST_DIR, 'index.js'));
   cpSync(join(clientDist, cssFile), join(DIST_DIR, 'index.css'));

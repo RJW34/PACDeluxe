@@ -216,6 +216,40 @@ const OVERLAY_SCRIPT: &str = r#"
         });
         console.log('[PACDeluxe] Canvas context menu disabled');
 
+        // === API URL REWRITE FOR LOCAL SERVING ===
+        // When the app is served from local files (tauri:// protocol),
+        // relative HTTP requests like /profile, /bots, /leaderboards, /tilemap/*
+        // resolve against the local origin and 404. This layer rewrites them
+        // to the production server. Must run BEFORE the asset cache intercept.
+        (function() {
+            const PROD_ORIGIN = 'https://pokemon-auto-chess.com';
+            // API paths that must hit the production server
+            const apiPrefixes = [
+                '/profile', '/bots', '/leaderboards', '/tilemap/',
+                '/game-history/', '/chat-history/'
+            ];
+
+            function isApiPath(url) {
+                if (typeof url !== 'string') return false;
+                for (const prefix of apiPrefixes) {
+                    if (url.startsWith(prefix)) return true;
+                }
+                return false;
+            }
+
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = function(input, init) {
+                if (typeof input === 'string' && isApiPath(input)) {
+                    input = PROD_ORIGIN + input;
+                } else if (input instanceof Request && isApiPath(new URL(input.url).pathname)) {
+                    input = new Request(PROD_ORIGIN + new URL(input.url).pathname + new URL(input.url).search, input);
+                }
+                return nativeFetch(input, init);
+            };
+
+            console.log('[PACDeluxe] API URL rewrite active for local serving');
+        })();
+
         // === ASSET CACHE WITH VERSION CHECK ===
         // Intercepts fetch() for static assets (images, JSON, audio)
         // Clears cache when game version changes

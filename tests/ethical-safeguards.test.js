@@ -13,7 +13,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { readFileSync, readdirSync, statSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -320,6 +320,60 @@ describe('Ethical Safeguards', () => {
         // docs directory doesn't exist yet
       }
     });
+  });
+});
+
+describe('Packaging Validation', () => {
+  const distDir = join(ROOT, 'dist');
+  const distExists = existsSync(distDir);
+
+  it('should include required runtime directories in dist/ when built', () => {
+    if (!distExists) {
+      console.log('Note: dist/ not found, skipping packaging check (run npm run build:frontend first)');
+      return;
+    }
+
+    // Check core files that must always exist
+    const requiredFiles = ['index.html', 'index.js', 'index.css'];
+    for (const file of requiredFiles) {
+      const fullPath = join(distDir, file);
+      assert.ok(
+        existsSync(fullPath),
+        `Required file missing from dist/: ${file}`
+      );
+    }
+
+    // Check runtime directories — warn but don't fail if dist/ may be stale
+    const runtimeDirs = {
+      required: ['assets'],
+      expected: ['locales', 'style'],
+      optional: ['pokechess', 'changelog'],
+    };
+
+    for (const dir of runtimeDirs.required) {
+      assert.ok(
+        existsSync(join(distDir, dir)),
+        `Required directory missing from dist/: ${dir}/`
+      );
+    }
+
+    let staleWarnings = 0;
+    for (const dir of runtimeDirs.expected) {
+      if (!existsSync(join(distDir, dir))) {
+        console.log(`Warning: dist/${dir}/ missing — rebuild with npm run build:frontend`);
+        staleWarnings++;
+      }
+    }
+
+    for (const dir of runtimeDirs.optional) {
+      if (!existsSync(join(distDir, dir))) {
+        console.log(`Note: optional dist/${dir}/ not found`);
+      }
+    }
+
+    if (staleWarnings > 0) {
+      console.log(`${staleWarnings} expected directory(ies) missing — dist/ may be from a pre-2.0 build`);
+    }
   });
 });
 
