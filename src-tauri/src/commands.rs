@@ -9,7 +9,7 @@ use crate::performance::{
     HdrInfo, get_hdr_info,
 };
 use serde::{Serialize, Deserialize};
-use tauri::{State, Manager, AppHandle};
+use tauri::{State, Manager, AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 use tracing::{debug, warn, info};
 use std::sync::Mutex;
