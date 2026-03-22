@@ -1,8 +1,11 @@
 /**
  * Ethical Safeguards Tests
  *
- * These tests verify that the Pokemon Auto Chess Deluxe client
- * does NOT implement any cheating functionality.
+ * These tests scan source files in src/ and src-tauri/src/ for forbidden
+ * patterns that would indicate cheating functionality.
+ *
+ * Scan scope: src/, src-tauri/src/ (and subdirectories)
+ * Excluded: scripts/, docs/, tests/, dist/, upstream-game/, node_modules/, target/, validation/
  *
  * CRITICAL: All tests MUST pass before any release.
  * Failure indicates potential cheating functionality that must be removed.
@@ -34,6 +37,8 @@ function getSourceFiles(dir, extensions = ['.js', '.ts', '.rs']) {
       const fullPath = join(dir, entry);
 
       // Skip non-source directories
+      // Excluded: third-party (node_modules), upstream source (upstream-game), build output (dist, target),
+      // build tooling (scripts), documentation (docs), test code (tests), validation artifacts, git internals
       const skipDirs = ['node_modules', 'upstream-game', '.git', 'tests', 'target', 'dist', 'scripts', 'docs', 'validation'];
       if (skipDirs.includes(entry)) {
         continue;

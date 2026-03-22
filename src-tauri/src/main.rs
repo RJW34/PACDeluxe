@@ -821,6 +821,19 @@ fn main() {
 
     info!("Starting PACDeluxe");
 
+    // Set WebView2 Chromium flags for real GPU performance gains
+    // Must be set before any WebView2 instance is created
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: called at startup before any threads spawn, single-threaded context
+        unsafe {
+            std::env::set_var(
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "--enable-gpu-rasterization --enable-zero-copy --disable-background-timer-throttling --disable-renderer-backgrounding",
+            );
+        }
+    }
+
     // Clean up any problematic files from old installations
     cleanup_old_installation();
 
@@ -846,7 +859,7 @@ fn main() {
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::External("https://pokemon-auto-chess.com".parse().unwrap())
+                WebviewUrl::App("index.html".into())
             )
             .title(&title)
             .inner_size(1280.0, 900.0)

@@ -2,20 +2,19 @@
 
 ## Pokemon Auto Chess Deluxe - Fair Play Commitment
 
-This document formally states the ethical constraints and fair play guarantees of the Pokemon Auto Chess Deluxe native client.
+This document states the ethical constraints and fair play guarantees of the PACDeluxe native client.
 
 ---
 
 ## Core Principles
 
-### 1. No Competitive Advantage
+### 1. No Hidden State Access
 
-This client provides **zero competitive advantage** over players using the standard browser version. All optimizations affect only:
+This client does not access, reveal, or exploit any hidden game state:
 
-- Visual smoothness
-- Input responsiveness
-- System resource usage
-- Application stability
+- No opponent information exposed
+- No future events predicted
+- No hidden server-side data read
 
 ### 2. Server Authority
 
@@ -26,14 +25,22 @@ All game logic remains **server-authoritative**:
 - Matchmaking is unchanged
 - Timing is server-synchronized
 
-### 3. Information Parity
+### 3. No Automated Decision-Making
 
-Users of this client see **exactly the same information** as browser users:
+No gameplay decisions are made by the client:
 
-- No hidden state revealed
-- No opponent information exposed
-- No future events predicted
-- No additional data displayed
+- No auto-play or auto-battle
+- No AI-assisted gameplay
+- No macro support for game actions
+- No input automation
+
+### 4. Information Display
+
+Users see the same **game information** as browser users. The performance overlay displays system-level telemetry (FPS, CPU, GPU, memory, refresh rate, RTT, HDR status) that is not derived from game state and does not reveal any hidden gameplay information.
+
+### 5. Non-Competitive QoL Features
+
+PACDeluxe includes a small set of quality-of-life features (booster "Flip All", "Equip" shortcut, session recovery) that provide convenience but do not affect competitive outcomes. These features interact only with client-side UI elements and do not access server-authoritative state.
 
 ---
 
@@ -42,28 +49,28 @@ Users of this client see **exactly the same information** as browser users:
 The following are **never implemented** in this client:
 
 ### Game State Manipulation
-- ❌ Reading hidden game state
-- ❌ Modifying game variables
-- ❌ Accessing opponent data
-- ❌ Revealing hidden information
+- Reading hidden game state
+- Modifying game variables
+- Accessing opponent data
+- Revealing hidden information
 
 ### RNG/Timing Manipulation
-- ❌ Predicting random outcomes
-- ❌ Manipulating random seeds
-- ❌ Altering timing calculations
-- ❌ Exploiting race conditions
+- Predicting random outcomes
+- Manipulating random seeds
+- Altering timing calculations
+- Exploiting race conditions
 
 ### Automation
-- ❌ Automated decision-making
-- ❌ AI-assisted gameplay
-- ❌ Macro support for game actions
-- ❌ Input automation
+- Automated decision-making
+- AI-assisted gameplay
+- Macro support for game actions
+- Input automation
 
 ### Network Manipulation
-- ❌ Intercepting game traffic
-- ❌ Modifying network messages
-- ❌ Replaying or forging packets
-- ❌ Man-in-the-middle attacks
+- Intercepting game traffic
+- Modifying network messages
+- Replaying or forging packets
+- Man-in-the-middle attacks
 
 ---
 
@@ -71,7 +78,7 @@ The following are **never implemented** in this client:
 
 ### Source Code Scanning
 
-Automated tests scan all source code for:
+Automated tests scan source files in `src/` and `src-tauri/src/` for forbidden patterns:
 
 ```javascript
 // Forbidden patterns checked by tests/ethical-safeguards.test.js
@@ -83,16 +90,26 @@ Automated tests scan all source code for:
 - intercept.*network
 ```
 
+**Scan scope:** `src/`, `src-tauri/src/`. Excluded directories: `scripts/`, `docs/`, `tests/`, `dist/`, `upstream-game/`, `node_modules/`, `target/`.
+
 ### Determinism Validation
 
-Before any release:
+The validation harness (`npm run validate`) performs:
 
-1. Game replays are recorded in both native and browser clients
-2. State hashes are compared tick-by-tick
-3. RNG call sequences are verified
-4. Final outcomes must match exactly
+1. Static source scanning for forbidden patterns (required)
+2. Replay-based state comparison when replay artifacts are present (optional)
 
-**Any divergence blocks deployment.**
+Replay comparison runs only when `validation/replays/` contains matching native and browser replay files. When present, state hashes are compared tick-by-tick and any divergence blocks deployment.
+
+### Build-Time Patches
+
+All modifications to upstream source code are:
+
+- Applied at build time by `scripts/build-frontend.js`
+- Idempotent (safe to re-apply)
+- Documented in `TRANSPARENCY.md`
+- Limited to: initial resize fix, booster Equip button, server URL hardcode
+- None modify game logic, RNG, matchmaking, or server-authoritative behavior
 
 ### Code Review Requirements
 
@@ -113,7 +130,7 @@ All source code is publicly available for inspection. Anyone can verify that no 
 
 ### Logging
 
-The client logs all performance optimizations applied. Users can verify that only rendering and system optimizations are active.
+The client logs all performance optimizations applied. Users can verify activity via browser/Tauri developer tools.
 
 ### Reproducibility
 
@@ -126,8 +143,7 @@ Anyone can build the client from source and compare it to official releases.
 If you discover any functionality that appears to violate these principles, please report it immediately:
 
 1. Open a GitHub issue
-2. Email the maintainers
-3. Contact the upstream Pokemon Auto Chess team
+2. Contact the upstream Pokemon Auto Chess team
 
 ---
 
@@ -141,6 +157,6 @@ This client respects the work of:
 
 ---
 
-*Last Updated: 2024*
+*Last Updated: 2026-03*
 
 *This document is legally non-binding but represents our firm commitment to fair play.*

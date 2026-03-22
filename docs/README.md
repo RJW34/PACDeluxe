@@ -1,16 +1,16 @@
 # Pokemon Auto Chess Deluxe
 
-A native desktop client for [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) focused exclusively on performance optimization.
+A native desktop client for [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) with performance optimizations and quality-of-life features.
 
 ## Overview
 
-Pokemon Auto Chess Deluxe is a native wrapper for the Pokemon Auto Chess browser game that provides:
+PACDeluxe bundles the upstream Pokemon Auto Chess game into a native desktop app that provides:
 
-- **Smoother frame pacing** through native rendering optimizations
-- **Lower input latency** via high-priority event handling
-- **Reduced memory usage** through efficient caching
-- **Better CPU utilization** with native helper processes
-- **Consistent performance** by eliminating browser overhead
+- **Local asset serving** — Game assets bundled locally for zero network latency on load
+- **GPU-optimized rendering** — Chromium GPU rasterization and zero-copy flags
+- **Lower system overhead** — Process priority elevation, timer resolution, power throttle bypass
+- **Better CPU utilization** — WebView2 child process priority management
+- **Consistent performance** — Background throttling disabled at the Chromium level
 
 ## Non-Cheating Guarantee
 
@@ -35,22 +35,23 @@ All gameplay logic remains server-authoritative and unchanged.
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │                  WebView (Frontend)                   │   │
 │  │  ┌───────────────────────────────────────────────┐   │   │
-│  │  │         Pokemon Auto Chess (Unchanged)         │   │   │
+│  │  │   Pokemon Auto Chess (build-time patches)      │   │   │
 │  │  │  ┌─────────────────────────────────────────┐  │   │   │
 │  │  │  │              Phaser 3 Game               │  │   │   │
 │  │  │  └─────────────────────────────────────────┘  │   │   │
 │  │  └───────────────────────────────────────────────┘   │   │
 │  │  ┌───────────────────────────────────────────────┐   │   │
-│  │  │         Performance Optimization Layer         │   │   │
-│  │  │  • Render Optimizer  • Frame Pacer            │   │   │
-│  │  │  • Input Optimizer   • Asset Cache            │   │   │
-│  │  │  • Profiling Overlay                          │   │   │
+│  │  │       Injected Runtime Layer (OVERLAY_SCRIPT)  │   │   │
+│  │  │  • Performance Overlay  • Asset Cache          │   │   │
+│  │  │  • Session Recovery     • Booster Flip All     │   │   │
+│  │  │  • Auto-Updater         • Window Controls      │   │   │
 │  │  └───────────────────────────────────────────────┘   │   │
 │  └─────────────────────────────────────────────────────┘   │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │              Native Performance Helper               │   │
-│  │  • Image decoding    • Asset preloading             │   │
-│  │  • System monitoring • Power management             │   │
+│  │              Native Performance Backend              │   │
+│  │  • Process priority     • Timer resolution          │   │
+│  │  • System monitoring    • Power management          │   │
+│  │  • GPU monitoring       • HDR detection             │   │
 │  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -63,27 +64,30 @@ All gameplay logic remains server-authoritative and unchanged.
 - Rust 1.70+
 - Platform-specific build tools:
   - Windows: Visual Studio Build Tools
-  - macOS: Xcode Command Line Tools
   - Linux: build-essential, libwebkit2gtk-4.1-dev
 
 ### Build Steps
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-repo/pokemon-auto-chess-deluxe
-cd pokemon-auto-chess-deluxe
+git clone https://github.com/RJW34/PACDeluxe
+cd PACDeluxe
 
 # Install dependencies
 npm install
 
 # Sync upstream game
 npm run sync-upstream
+cd upstream-game && npm install && cd ..
+
+# Build frontend (applies patches, bundles to dist/)
+npm run build:frontend
 
 # Development mode
-npm run dev
+npm run tauri:dev
 
 # Production build
-npm run build
+npm run tauri:build
 ```
 
 ## Usage
@@ -91,14 +95,14 @@ npm run build
 ### Development
 
 ```bash
-# Start development server with hot reload
-npm run dev
-
-# Build frontend only
+# Build frontend with patches
 npm run build:frontend
 
-# Run Tauri in development mode
+# Start Tauri in development mode
 npm run tauri:dev
+
+# Or use the dev server
+npm run dev:server
 ```
 
 ### Production
@@ -107,10 +111,10 @@ npm run tauri:dev
 # Build production release
 npm run build
 
-# Validate before release
+# Run source scanning + optional replay validation
 npm run validate
 
-# Run tests
+# Run ethical safeguard tests
 npm test
 ```
 
@@ -121,61 +125,36 @@ npm test
 - `Shift+F11`: Toggle borderless windowed mode
 - Standard game shortcuts remain unchanged
 
-## Configuration
-
-Configuration is stored in:
-- Windows: `%APPDATA%/pokemon-auto-chess-deluxe/config.json`
-- macOS: `~/Library/Application Support/pokemon-auto-chess-deluxe/config.json`
-- Linux: `~/.config/pokemon-auto-chess-deluxe/config.json`
-
-### Options
-
-```json
-{
-  "performance": {
-    "vsync": true,
-    "target_fps": 60,
-    "gpu_acceleration": true,
-    "disable_background_throttle": true,
-    "preload_assets": true,
-    "cache_size_mb": 512
-  },
-  "display": {
-    "width": 1920,
-    "height": 1080,
-    "fullscreen": false,
-    "borderless": false
-  },
-  "debug": {
-    "show_perf_overlay": false
-  }
-}
-```
-
 ## Performance Optimizations
 
-### Rendering
-- WebGL-only mode (no Canvas fallback)
-- GPU compositing layers
-- Object pooling for sprites
-- Batch rendering calls
-
-### Input
-- High-priority event handling
-- Input-to-render latency tracking
-- MessageChannel for faster callbacks
+### Rendering (Chromium flags)
+- GPU rasterization enabled
+- Zero-copy rasterization (reduces memory copies)
+- Background timer throttling disabled
+- Renderer backgrounding disabled
 
 ### Assets
-- Aggressive service worker caching
-- Native image decoding
-- Memory-mapped asset loading
-- Background preloading
+- Local asset serving (zero network latency)
+- In-memory fetch cache (128MB, version-aware)
+- Session-based asset prewarming
+- Nearest-neighbor texture filtering for pixel art
 
-### System
+### System (Rust backend)
 - Above-normal process priority
-- High-resolution timer
-- Disabled background throttling
-- Power mode management
+- High-resolution timer (1ms)
+- Power throttling disabled
+- DWM transition optimizations
+- WebView2 child process priority elevation
+
+## Build-Time Patches
+
+The build process applies three idempotent patches to the upstream source:
+
+1. **Phaser resize** — Forces initial resize call in `game-container.ts`
+2. **Booster Equip** — Adds avatar equip button in `booster.tsx`
+3. **Server URL** — Hardcodes WebSocket URL in `network.ts` for local serving
+
+No game logic, RNG, matchmaking, or competitive behavior is modified.
 
 ## Validation
 
@@ -185,10 +164,9 @@ Before any release, run the validation harness:
 npm run validate
 ```
 
-This checks:
-1. Ethical compliance (no cheating code)
-2. Determinism validation (identical game outcomes)
-3. Source code scanning for forbidden patterns
+This performs:
+1. Static source scanning for forbidden patterns (required)
+2. Replay-based determinism comparison when replay artifacts are present (optional)
 
 ## License
 
@@ -198,12 +176,12 @@ BSD-3-Clause (matching upstream)
 
 Contributions must:
 1. Pass all ethical safeguard tests
-2. Not modify gameplay logic
-3. Focus only on performance
-4. Include appropriate tests
+2. Not modify competitive gameplay logic
+3. Include appropriate tests
+4. Use idempotent build-time patches for any upstream changes
 
 ## Disclaimer
 
 This is an unofficial client. Pokemon Auto Chess is developed by the [keldaanCommunity](https://github.com/keldaanCommunity/pokemonAutoChess).
 
-All Pokemon-related content is © Nintendo/Creatures Inc./GAME FREAK Inc.
+All Pokemon-related content is (c) Nintendo/Creatures Inc./GAME FREAK Inc.

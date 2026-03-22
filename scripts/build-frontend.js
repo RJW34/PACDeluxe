@@ -35,6 +35,23 @@ const BOOSTER_COMPONENT_FILE = join(
   'booster',
   'booster.tsx'
 );
+const NETWORK_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'network.ts'
+);
+const LOGIN_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'pages',
+  'component',
+  'auth',
+  'login.tsx'
+);
 
 function log(msg) {
   console.log(`[build] ${msg}`);
@@ -152,6 +169,41 @@ function applyUpstreamPatches() {
 
     writeFileSync(BOOSTER_COMPONENT_FILE, boosterContent);
     log('Applied upstream patch: booster Equip button for new avatar cards');
+  }
+
+  // === PATCH 3: Hardcode Colyseus server URL for local-build architecture ===
+  // When serving locally via Tauri, window.location resolves to tauri://localhost
+  // which breaks the WebSocket connection to the game server.
+  if (!existsSync(NETWORK_FILE)) {
+    throw new Error(`Upstream file missing: ${NETWORK_FILE}`);
+  }
+
+  let networkContent = readFileSync(NETWORK_FILE, 'utf-8');
+  if (!networkContent.includes('"wss://pokemon-auto-chess.com"')) {
+    networkContent = replaceOrThrow(
+      networkContent,
+      'const endpoint = `${window.location.protocol.replace("http", "ws")}//${\n  window.location.host\n}`',
+      'const endpoint = "wss://pokemon-auto-chess.com"',
+      'network server URL'
+    );
+    writeFileSync(NETWORK_FILE, networkContent);
+    log('Applied upstream patch: hardcoded Colyseus server URL for local serving');
+  }
+
+  // === PATCH 4: Hardcode signInSuccessUrl for local-build architecture ===
+  // Defensive patch — popup auth may not use this, but prevents broken redirects.
+  if (existsSync(LOGIN_FILE)) {
+    let loginContent = readFileSync(LOGIN_FILE, 'utf-8');
+    if (!loginContent.includes('"https://pokemon-auto-chess.com/lobby"')) {
+      if (loginContent.includes('signInSuccessUrl: window.location.href + "lobby"')) {
+        loginContent = loginContent.replace(
+          'signInSuccessUrl: window.location.href + "lobby"',
+          'signInSuccessUrl: "https://pokemon-auto-chess.com/lobby"'
+        );
+        writeFileSync(LOGIN_FILE, loginContent);
+        log('Applied upstream patch: hardcoded signInSuccessUrl for local serving');
+      }
+    }
   }
 }
 
