@@ -777,65 +777,160 @@ const OVERLAY_SCRIPT: &str = r#"
         })();
 
         // === AUTO-UPDATER ===
-        // Check for updates on startup and show non-intrusive notification
-        // Uses custom Rust commands to avoid CSP issues with plugin IPC
+        // Check for updates on startup and show user-friendly notification
+        // with release notes, progress bar, and clear messaging for major updates
         (async function checkForUpdates() {
             // Wait for Tauri to be fully initialized
             await new Promise(resolve => setTimeout(resolve, 5000));
 
             const invoke = window.__TAURI__?.core?.invoke;
+            const listen = window.__TAURI__?.event?.listen;
             if (!invoke) {
                 console.log('[PACDeluxe] Tauri not available, skipping update check');
                 return;
             }
 
             try {
-                // Check for updates using our custom Rust command
                 const update = await invoke('check_for_updates');
                 console.log('[PACDeluxe] Update check result:', update);
 
                 if (update && update.available) {
                     console.log('[PACDeluxe] Update available:', update.version);
 
-                    // Create update notification banner
+                    // Detect major version bump for special messaging
+                    const isMajor = update.version && update.version.startsWith('2.') || update.version.startsWith('3.');
+
+                    // Build release notes summary (strip markdown, truncate)
+                    let notes = '';
+                    if (update.body) {
+                        notes = update.body
+                            .replace(/#{1,6}\s*/g, '')
+                            .replace(/\*\*/g, '')
+                            .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+                            .replace(/\n{2,}/g, '\n')
+                            .trim();
+                        if (notes.length > 300) notes = notes.substring(0, 297) + '...';
+                    }
+
+                    // Create update notification
                     const banner = document.createElement('div');
                     banner.id = 'pac-update-banner';
-                    banner.innerHTML = '<span>PACDeluxe v' + update.version + ' available!</span>' +
-                        '<button id="pac-update-btn">Update Now</button>' +
-                        '<button id="pac-update-dismiss">x</button>';
-                    banner.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);background:linear-gradient(90deg,#1a5a1a,#2a7a2a);color:#fff;padding:8px 16px;border-radius:0 0 8px 8px;z-index:99998;font:13px/1.4 sans-serif;display:flex;align-items:center;gap:12px;box-shadow:0 2px 10px rgba(0,0,0,0.3);';
+                    banner.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1a3a5c,#1a5a1a);color:#fff;padding:0;border-radius:0 0 12px 12px;z-index:99998;font:13px/1.5 sans-serif;box-shadow:0 4px 20px rgba(0,0,0,0.4);max-width:480px;width:90vw;overflow:hidden;';
+
+                    let bannerHTML = '<div style="padding:12px 16px;">';
+                    bannerHTML += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">';
+                    bannerHTML += '<span style="font-weight:bold;font-size:14px;">PACDeluxe v' + update.version + ' available</span>';
+                    bannerHTML += '<button id="pac-update-dismiss" style="background:transparent;color:#fff8;border:none;padding:2px 6px;cursor:pointer;font-size:18px;line-height:1;" title="Dismiss">&times;</button>';
+                    bannerHTML += '</div>';
+
+                    if (isMajor) {
+                        bannerHTML += '<div style="background:rgba(255,255,255,0.1);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:12px;">';
+                        bannerHTML += 'This is a major update. The download may be larger than usual.';
+                        bannerHTML += '</div>';
+                    }
+
+                    if (notes) {
+                        bannerHTML += '<div style="background:rgba(0,0,0,0.2);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:11px;max-height:100px;overflow-y:auto;white-space:pre-wrap;line-height:1.4;color:#fffc;">';
+                        bannerHTML += notes;
+                        bannerHTML += '</div>';
+                    }
+
+                    // Progress bar (hidden initially)
+                    bannerHTML += '<div id="pac-update-progress-wrap" style="display:none;margin-bottom:10px;">';
+                    bannerHTML += '<div style="background:rgba(255,255,255,0.15);border-radius:4px;height:6px;overflow:hidden;">';
+                    bannerHTML += '<div id="pac-update-progress-bar" style="background:#4ade80;height:100%;width:0%;transition:width 0.3s ease;border-radius:4px;"></div>';
+                    bannerHTML += '</div>';
+                    bannerHTML += '<div id="pac-update-progress-text" style="font-size:11px;color:#fffa;margin-top:4px;text-align:center;">Downloading...</div>';
+                    bannerHTML += '</div>';
+
+                    // Status text (shown during install)
+                    bannerHTML += '<div id="pac-update-status" style="display:none;text-align:center;padding:4px 0;font-size:12px;color:#4ade80;"></div>';
+
+                    // Buttons
+                    bannerHTML += '<div id="pac-update-buttons" style="display:flex;gap:8px;justify-content:flex-end;">';
+                    bannerHTML += '<button id="pac-update-later" style="background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;">Later</button>';
+                    bannerHTML += '<button id="pac-update-btn" style="background:#4ade80;color:#1a3a2a;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:bold;font-size:12px;">Update Now</button>';
+                    bannerHTML += '</div>';
+
+                    bannerHTML += '</div>';
+                    banner.innerHTML = bannerHTML;
                     document.body.appendChild(banner);
 
-                    // Update button handler
+                    // Dismiss / Later handlers
+                    document.getElementById('pac-update-dismiss').onclick = () => banner.remove();
+                    document.getElementById('pac-update-later').onclick = () => banner.remove();
+
+                    // Update button handler with progress tracking
                     document.getElementById('pac-update-btn').onclick = async () => {
-                        banner.innerHTML = '<span>Downloading update...</span>';
+                        const buttons = document.getElementById('pac-update-buttons');
+                        const progressWrap = document.getElementById('pac-update-progress-wrap');
+                        const progressBar = document.getElementById('pac-update-progress-bar');
+                        const progressText = document.getElementById('pac-update-progress-text');
+                        const statusEl = document.getElementById('pac-update-status');
+
+                        // Hide buttons, show progress
+                        buttons.style.display = 'none';
+                        progressWrap.style.display = 'block';
+
+                        // Track download progress via Tauri events
+                        let downloaded = 0;
+                        let totalSize = 0;
+                        let unlisten = null;
+
+                        if (listen) {
+                            try {
+                                unlisten = await listen('update-progress', (event) => {
+                                    const data = event.payload;
+                                    downloaded += (data.chunk || 0);
+                                    if (data.total > 0) totalSize = data.total;
+
+                                    if (totalSize > 0) {
+                                        const pct = Math.min(100, Math.round((downloaded / totalSize) * 100));
+                                        progressBar.style.width = pct + '%';
+                                        const dlMB = (downloaded / 1048576).toFixed(1);
+                                        const totalMB = (totalSize / 1048576).toFixed(1);
+                                        progressText.textContent = dlMB + ' / ' + totalMB + ' MB (' + pct + '%)';
+                                    } else {
+                                        const dlMB = (downloaded / 1048576).toFixed(1);
+                                        progressText.textContent = dlMB + ' MB downloaded...';
+                                        // Animate indeterminate progress
+                                        progressBar.style.width = Math.min(90, (downloaded / 1048576) * 2) + '%';
+                                    }
+                                });
+                            } catch(e) {
+                                console.log('[PACDeluxe] Could not listen for progress events:', e);
+                            }
+                        }
+
                         try {
-                            // Download and install using our custom Rust command
                             await invoke('install_update');
-                            banner.innerHTML = '<span>Update installed! Restarting...</span>';
-                            // Restart the app
+
+                            if (unlisten) unlisten();
+                            progressWrap.style.display = 'none';
+                            statusEl.style.display = 'block';
+                            statusEl.textContent = 'Update installed! Restarting...';
+
                             setTimeout(async () => {
-                                await invoke('restart_app');
+                                try { await invoke('restart_app'); } catch(e) {}
                             }, 1500);
                         } catch (e) {
+                            if (unlisten) unlisten();
                             console.error('[PACDeluxe] Update failed:', e);
-                            banner.innerHTML = '<span>Update failed: ' + (e.message || e) + '</span>';
-                            setTimeout(() => banner.remove(), 5000);
+                            progressWrap.style.display = 'none';
+                            statusEl.style.display = 'block';
+                            statusEl.style.color = '#f87171';
+                            statusEl.textContent = 'Update failed: ' + (e.message || e);
+                            // Show buttons again so user can retry or dismiss
+                            setTimeout(() => {
+                                buttons.style.display = 'flex';
+                                statusEl.style.display = 'none';
+                            }, 5000);
                         }
                     };
-
-                    // Dismiss button
-                    document.getElementById('pac-update-dismiss').onclick = () => banner.remove();
-
-                    // Style the buttons
-                    const btnStyle = 'background:#fff;color:#1a5a1a;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-weight:bold;';
-                    document.getElementById('pac-update-btn').style.cssText = btnStyle;
-                    document.getElementById('pac-update-dismiss').style.cssText = 'background:transparent;color:#fff;border:none;padding:4px;cursor:pointer;font-size:16px;';
                 } else {
                     console.log('[PACDeluxe] App is up to date');
                 }
             } catch (e) {
-                // Log the error for debugging
                 console.log('[PACDeluxe] Update check failed:', e.message || e);
             }
         })();

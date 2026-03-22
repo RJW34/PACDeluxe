@@ -373,9 +373,10 @@ pub async fn check_for_updates(
     }
 }
 
-/// Download and install the pending update
+/// Download and install the pending update, emitting progress events
 #[tauri::command]
 pub async fn install_update(
+    app: AppHandle,
     pending: State<'_, PendingUpdate>,
 ) -> Result<(), String> {
     info!("Installing update...");
@@ -383,8 +384,17 @@ pub async fn install_update(
     let update = pending.0.lock().unwrap().take()
         .ok_or_else(|| "No pending update to install".to_string())?;
 
-    // Download and install
-    update.download_and_install(|_chunk, _total| {}, || {}).await
+    // Download and install with progress reporting via Tauri events
+    let app_handle = app.clone();
+    update.download_and_install(
+        move |chunk_length, total_size| {
+            let _ = app_handle.emit("update-progress", serde_json::json!({
+                "chunk": chunk_length,
+                "total": total_size.unwrap_or(0),
+            }));
+        },
+        || {},
+    ).await
         .map_err(|e| {
             warn!("Update installation failed: {}", e);
             e.to_string()
