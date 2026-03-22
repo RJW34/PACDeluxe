@@ -797,8 +797,10 @@ const OVERLAY_SCRIPT: &str = r#"
                 if (update && update.available) {
                     console.log('[PACDeluxe] Update available:', update.version);
 
-                    // Detect major version bump for special messaging
-                    const isMajor = update.version && update.version.startsWith('2.') || update.version.startsWith('3.');
+                    // Detect major version bump by comparing current vs target major version
+                    const currentMajor = (document.title.match(/v(\d+)\./) || [])[1] || '0';
+                    const targetMajor = (update.version.match(/^(\d+)\./) || [])[1] || '0';
+                    const isMajor = targetMajor !== currentMajor;
 
                     // Build release notes summary (strip markdown, truncate)
                     let notes = '';

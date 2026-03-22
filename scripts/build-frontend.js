@@ -178,7 +178,8 @@ function applyUpstreamPatches() {
     throw new Error(`Upstream file missing: ${NETWORK_FILE}`);
   }
 
-  let networkContent = readFileSync(NETWORK_FILE, 'utf-8');
+  let networkContent = readFileSync(NETWORK_FILE, 'utf-8')
+    .replace(/\r\n/g, '\n');
   if (!networkContent.includes('"wss://pokemon-auto-chess.com"')) {
     networkContent = replaceOrThrow(
       networkContent,
@@ -193,7 +194,8 @@ function applyUpstreamPatches() {
   // === PATCH 4: Hardcode signInSuccessUrl for local-build architecture ===
   // Defensive patch — popup auth may not use this, but prevents broken redirects.
   if (existsSync(LOGIN_FILE)) {
-    let loginContent = readFileSync(LOGIN_FILE, 'utf-8');
+    let loginContent = readFileSync(LOGIN_FILE, 'utf-8')
+      .replace(/\r\n/g, '\n');
     if (!loginContent.includes('"https://pokemon-auto-chess.com/lobby"')) {
       if (loginContent.includes('signInSuccessUrl: window.location.href + "lobby"')) {
         loginContent = loginContent.replace(

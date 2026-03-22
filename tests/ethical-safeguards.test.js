@@ -343,36 +343,21 @@ describe('Packaging Validation', () => {
       );
     }
 
-    // Check runtime directories — warn but don't fail if dist/ may be stale
-    const runtimeDirs = {
-      required: ['assets'],
-      expected: ['locales', 'style'],
-      optional: ['pokechess', 'changelog'],
-    };
+    // Check runtime directories that must exist for the app to function
+    const requiredDirs = ['assets', 'locales'];
+    const optionalDirs = ['style', 'pokechess', 'changelog'];
 
-    for (const dir of runtimeDirs.required) {
+    for (const dir of requiredDirs) {
       assert.ok(
         existsSync(join(distDir, dir)),
-        `Required directory missing from dist/: ${dir}/`
+        `Required directory missing from dist/: ${dir}/ — run npm run build:frontend`
       );
     }
 
-    let staleWarnings = 0;
-    for (const dir of runtimeDirs.expected) {
-      if (!existsSync(join(distDir, dir))) {
-        console.log(`Warning: dist/${dir}/ missing — rebuild with npm run build:frontend`);
-        staleWarnings++;
-      }
-    }
-
-    for (const dir of runtimeDirs.optional) {
+    for (const dir of optionalDirs) {
       if (!existsSync(join(distDir, dir))) {
         console.log(`Note: optional dist/${dir}/ not found`);
       }
-    }
-
-    if (staleWarnings > 0) {
-      console.log(`${staleWarnings} expected directory(ies) missing — dist/ may be from a pre-2.0 build`);
     }
   });
 });
