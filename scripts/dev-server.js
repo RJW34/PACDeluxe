@@ -94,6 +94,17 @@ const server = createServer((req, res) => {
 
   const filepath = join(DIST_DIR, pathname);
 
+  // API paths that the game fetches from the server — proxy to production
+  // in dev mode since OVERLAY_SCRIPT's rewrite layer isn't active outside Tauri
+  const apiPrefixes = ['/profile', '/bots', '/leaderboards', '/tilemap/',
+    '/game-history/', '/chat-history/'];
+  if (apiPrefixes.some(p => pathname.startsWith(p))) {
+    const target = 'https://pokemon-auto-chess.com' + req.url;
+    res.writeHead(302, { Location: target });
+    res.end();
+    return;
+  }
+
   // SPA fallback: if the file doesn't exist and the path has no extension,
   // serve index.html so React Router can handle routes like /lobby, /game
   if (!existsSync(filepath) && !extname(pathname)) {
