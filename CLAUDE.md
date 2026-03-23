@@ -28,7 +28,7 @@ Major architecture pivot: the app now serves locally-built frontend assets from 
 8. **Auto-updater** — Checks GitHub releases, shows banner, downloads + restarts
 9. **Custom booster UX** — "Flip All" button (runtime), "Equip" button (build-time patch), session recovery monitor
 10. **Window modes** — F11 fullscreen, Shift+F11 borderless windowed
-11. **Build-time patches** — Resize fix, booster Equip, server URL hardcode (all idempotent)
+11. **Build-time patches** — Resize fix, booster Equip, server URL, anonymous login redirect, server detection, auth success URL (all idempotent)
 
 ### Known Limitations:
 - **GPU monitoring** — Windows only (via PDH API). Linux returns N/A

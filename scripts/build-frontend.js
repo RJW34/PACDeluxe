@@ -53,6 +53,26 @@ const LOGIN_FILE = join(
   'auth',
   'login.tsx'
 );
+const ANONYMOUS_BUTTON_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'pages',
+  'component',
+  'auth',
+  'anonymous-button.tsx'
+);
+const SERVERS_LIST_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'pages',
+  'component',
+  'servers',
+  'servers-list.tsx'
+);
 
 function log(msg) {
   console.log(`[build] ${msg}`);
@@ -205,6 +225,40 @@ function applyUpstreamPatches() {
         );
         writeFileSync(LOGIN_FILE, loginContent);
         log('Applied upstream patch: hardcoded signInSuccessUrl for local serving');
+      }
+    }
+  }
+
+  // === PATCH 5: Fix anonymous login redirect for local serving ===
+  // anonymous-button.tsx uses window.location.href + "lobby" which breaks under tauri://
+  if (existsSync(ANONYMOUS_BUTTON_FILE)) {
+    let anonContent = readFileSync(ANONYMOUS_BUTTON_FILE, 'utf-8')
+      .replace(/\r\n/g, '\n');
+    if (!anonContent.includes('"https://pokemon-auto-chess.com/lobby"')) {
+      if (anonContent.includes('window.location.href = window.location.href + "lobby"')) {
+        anonContent = anonContent.replace(
+          'window.location.href = window.location.href + "lobby"',
+          'window.location.href = "https://pokemon-auto-chess.com/lobby"'
+        );
+        writeFileSync(ANONYMOUS_BUTTON_FILE, anonContent);
+        log('Applied upstream patch: anonymous login redirect for local serving');
+      }
+    }
+  }
+
+  // === PATCH 6: Fix server detection for local serving ===
+  // servers-list.tsx uses window.location.origin to detect current server
+  if (existsSync(SERVERS_LIST_FILE)) {
+    let serversContent = readFileSync(SERVERS_LIST_FILE, 'utf-8')
+      .replace(/\r\n/g, '\n');
+    if (!serversContent.includes('"https://pokemon-auto-chess.com"')) {
+      if (serversContent.includes('server.url?.startsWith(window.location.origin)')) {
+        serversContent = serversContent.replace(
+          'server.url?.startsWith(window.location.origin)',
+          'server.url?.startsWith("https://pokemon-auto-chess.com")'
+        );
+        writeFileSync(SERVERS_LIST_FILE, serversContent);
+        log('Applied upstream patch: server detection for local serving');
       }
     }
   }

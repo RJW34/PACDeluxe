@@ -44,7 +44,8 @@ A native desktop client that bundles the [Pokemon Auto Chess](https://pokemon-au
 #### 6. WebView2 Chromium Flags (Windows)
 - **What:** Sets GPU rasterization, zero-copy, and background throttling flags
 - **Why:** Enables GPU-accelerated rasterization and prevents background deprioritization
-- **Flags:** `--enable-gpu-rasterization --enable-zero-copy --disable-background-timer-throttling --disable-renderer-backgrounding`
+- **Flags:** `--enable-gpu-rasterization --enable-zero-copy --disable-background-timer-throttling --disable-renderer-backgrounding --disable-web-security`
+- **Note on `--disable-web-security`:** Required because the locally-served app makes authenticated API calls to `pokemon-auto-chess.com`, which is a different origin. Without this flag, CORS would block profile loading, leaderboards, bot management, and other server-backed features. This is standard for desktop apps serving local content.
 - **Set via:** `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` environment variable before WebView creation
 
 #### 7. Linux Process Priority
@@ -122,6 +123,18 @@ A native desktop client that bundles the [Pokemon Auto Chess](https://pokemon-au
 #### 21. Server URL Hardcode
 - **What:** Replaces `window.location`-derived WebSocket URL with `wss://pokemon-auto-chess.com` in `network.ts`
 - **Why:** When served locally via Tauri protocol, `window.location` would resolve to `tauri://localhost`, breaking multiplayer
+
+#### 22a. Anonymous Login Redirect
+- **What:** Replaces `window.location.href + "lobby"` with `https://pokemon-auto-chess.com/lobby` in `anonymous-button.tsx`
+- **Why:** Guest login redirect would point to `tauri://localhost/lobby` instead of the game lobby
+
+#### 22b. Server Detection
+- **What:** Replaces `window.location.origin` check with hardcoded `https://pokemon-auto-chess.com` in `servers-list.tsx`
+- **Why:** Current server detection would fail since local origin doesn't match any server URL
+
+#### 22c. Auth Success URL
+- **What:** Replaces `window.location.href + "lobby"` with `https://pokemon-auto-chess.com/lobby` in `login.tsx`
+- **Why:** Defensive patch for Firebase auth redirect URL
 
 ### Startup Behavior
 
