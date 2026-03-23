@@ -11,6 +11,7 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { get as httpsGet } from 'https';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -209,6 +210,98 @@ function applyUpstreamPatches() {
   }
 }
 
+/**
+ * Fetch a URL and return the response body as a string.
+ */
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    httpsGet(url, (res) => {
+      // Follow redirects
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        fetchText(res.headers.location).then(resolve, reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode} fetching ${url}`));
+        return;
+      }
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
+/**
+ * Extract Firebase client config from the live Pokemon Auto Chess site.
+ * These are public client-side values (visible in any browser's devtools).
+ * Writes upstream-game/.env so esbuild can inject them into the bundle.
+ */
+async function ensureFirebaseConfig() {
+  const envFile = join(UPSTREAM_DIR, '.env');
+
+  // Skip if .env already has Firebase config
+  if (existsSync(envFile)) {
+    const existing = readFileSync(envFile, 'utf-8');
+    if (existing.includes('FIREBASE_API_KEY=') && !existing.includes('FIREBASE_API_KEY=""')) {
+      log('Firebase config already present in .env');
+      return;
+    }
+  }
+
+  log('Fetching Firebase config from live site...');
+
+  try {
+    // Fetch the HTML to find the JS bundle filename
+    const html = await fetchText('https://pokemon-auto-chess.com');
+    const scriptMatch = html.match(/src="(index-[^"]+\.js)"/);
+    if (!scriptMatch) {
+      throw new Error('Could not find JS bundle URL in live site HTML');
+    }
+
+    // Fetch the JS bundle and extract Firebase config values
+    const jsUrl = `https://pokemon-auto-chess.com/${scriptMatch[1]}`;
+    log(`Fetching bundle: ${scriptMatch[1]}`);
+    const js = await fetchText(jsUrl);
+
+    const extract = (key) => {
+      const m = js.match(new RegExp(key + ':"([^"]+)"'));
+      return m ? m[1] : '';
+    };
+
+    const config = {
+      FIREBASE_API_KEY: extract('apiKey'),
+      FIREBASE_AUTH_DOMAIN: extract('authDomain'),
+      FIREBASE_PROJECT_ID: extract('projectId'),
+      FIREBASE_STORAGE_BUCKET: extract('storageBucket'),
+      FIREBASE_MESSAGING_SENDER_ID: extract('messagingSenderId'),
+      FIREBASE_APP_ID: extract('appId'),
+    };
+
+    // Validate we got the essential values
+    if (!config.FIREBASE_API_KEY || !config.FIREBASE_PROJECT_ID) {
+      throw new Error('Could not extract Firebase config from live site bundle');
+    }
+
+    // Write .env file
+    const envContent = Object.entries(config)
+      .map(([k, v]) => `${k}="${v}"`)
+      .join('\n') + '\n';
+    writeFileSync(envFile, envContent);
+    log('Firebase config written to upstream-game/.env');
+  } catch (e) {
+    // If we can't fetch, check if there's a usable .env already
+    if (existsSync(envFile)) {
+      log(`Warning: could not fetch live config (${e.message}), using existing .env`);
+    } else {
+      throw new Error(
+        `Firebase config required but could not be fetched: ${e.message}\n` +
+        'Create upstream-game/.env manually with FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, etc.'
+      );
+    }
+  }
+}
+
 async function main() {
   log('Building Pokemon Auto Chess frontend...');
 
@@ -216,6 +309,9 @@ async function main() {
   if (!existsSync(join(UPSTREAM_DIR, 'package.json'))) {
     throw new Error('Upstream not found. Run: npm run sync-upstream');
   }
+
+  // Ensure Firebase client config is available for the build
+  await ensureFirebaseConfig();
 
   applyUpstreamPatches();
 
