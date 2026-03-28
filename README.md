@@ -1,6 +1,6 @@
 # PACDeluxe
 
-A native desktop client for [Pokemon Auto Chess](https://pokemon-auto-chess.com) that bundles the upstream game with performance optimizations and quality-of-life features.
+PACDeluxe is a native desktop client for [Pokemon Auto Chess](https://pokemon-auto-chess.com) that bundles the upstream game, serves assets locally, and adds native performance features plus a small set of non-competitive quality-of-life features.
 
 ## Download
 
@@ -8,61 +8,95 @@ A native desktop client for [Pokemon Auto Chess](https://pokemon-auto-chess.com)
 
 ## Platform Support
 
-- **Windows** (primary) — MSI and NSIS installers
-- **Linux** (experimental) — AppImage
+- **Windows** - released and supported
+- **Linux** - local experimentation only; release artifacts are paused until parity validation exists
 
-## Installation
+## What PACDeluxe Does
 
-1. Download the installer for your platform from the link above
-2. Run the installer
-3. Launch PACDeluxe from your desktop or Start menu
+- Bundles the upstream web client into a Tauri desktop shell
+- Serves game assets locally from `dist/`
+- Uses native system-performance tuning on supported platforms
+- Shows an in-app performance overlay
+- Adds non-competitive QoL such as booster `Flip All`, avatar `Equip`, session recovery, and updater UX
+- Uses a native allowlisted proxy for required upstream HTTP endpoints instead of relying on browser-security bypasses
 
-## Features
+All competitive gameplay remains server-authoritative.
 
-- **Local Asset Serving** — Game assets are bundled and served locally for zero network latency on load
-- **GPU-Optimized Rendering** — Chromium GPU rasterization and zero-copy flags enabled
-- **System Performance Tuning** — Process priority elevation, 1ms timer resolution, power throttle bypass (Windows)
-- **Performance Overlay** — Monitor FPS, CPU, GPU, memory, refresh rate, RTT, and HDR status
-- **Fullscreen & Borderless** — Native fullscreen and borderless windowed modes
-- **Booster QoL** — "Flip All" button on booster packs, "Equip" button for new avatar cards
-- **Session Recovery** — Detects broken auth state and auto-recovers
-- **Auto-Updater** — Checks GitHub releases and offers in-app updates
-- **Pixel-Perfect Rendering** — Nearest-neighbor texture filtering for crisp sprite art
+## Build-Time Patches
 
-## How to Use
+PACDeluxe applies a documented set of non-gameplay upstream patches during `npm run build:frontend`.
 
-1. Launch PACDeluxe
-2. Log in with your Google account (same as the browser version)
-3. Play normally — all game logic runs on the official servers
+Canonical patch inventory:
 
-### Keyboard Shortcuts
+- `docs/PATCH_MANIFEST.md`
+
+## Development
+
+```bash
+npm install
+npm run sync-upstream
+cd upstream-game && npm install && cd ..
+npm run build:frontend
+npm run tauri:dev
+```
+
+## Build Requirements
+
+PACDeluxe requires explicit Firebase client configuration for local builds.
+
+Use one of:
+
+1. `config/firebase-client.env`
+2. shell environment variables
+3. an existing `upstream-game/.env`
+
+Template:
+
+- `config/firebase-client.env.example`
+
+PACDeluxe does not scrape Firebase config from the live production site at build time.
+
+## Verification
+
+Run the full repo verification pass before release work:
+
+```bash
+npm run verify
+```
+
+This runs:
+
+- ethical safeguard tests
+- validation harness
+- patch-manifest verification
+- `cargo check`
+
+## Keyboard Shortcuts
 
 | Shortcut | Action |
-|----------|--------|
+|---|---|
 | `Ctrl+Shift+P` | Toggle performance overlay |
 | `F11` | Toggle fullscreen |
 | `Shift+F11` | Toggle borderless windowed |
 
 ## FAQ
 
-**Is this cheating?**
-No. PACDeluxe does not access hidden game state, alter server-authoritative gameplay logic, or automate decisions. It adds performance optimizations and a small set of non-competitive quality-of-life features. All game logic runs on the official servers.
+**Is this cheating?**  
+No. PACDeluxe does not reveal hidden state, alter server-authoritative game logic, or automate gameplay.
 
-**Will I get banned?**
-PACDeluxe does not violate any game rules. It is a different way to access the same game with the same servers.
+**What gets modified?**  
+Only documented non-gameplay runtime behavior and the patch inventory listed in `docs/PATCH_MANIFEST.md`.
 
-**Do I need a separate account?**
-No. Use your existing Google login.
+**Why is Linux not released right now?**  
+The repo still contains Linux-specific code paths, but public Linux release artifacts are paused until the local-build network/runtime path has equivalent validation.
 
-**Can I still play with browser users?**
-Yes. You connect to the same servers and play with everyone.
+## More Docs
 
-**What gets patched at build time?**
-Three non-gameplay changes: an initial resize fix for Phaser, an "Equip" button for new booster cards, and a server URL hardcode for local serving. No game logic is modified.
-
-## Issues
-
-If something isn't working, [open an issue](https://github.com/RJW34/PACDeluxe/issues).
+- `TRANSPARENCY.md`
+- `docs/README.md`
+- `docs/ETHICS_AND_COMPLIANCE.md`
+- `docs/ADR-0001-local-build-architecture.md`
+- `docs/RELEASE_CHECKLIST.md`
 
 ## Credits
 

@@ -94,14 +94,16 @@ const server = createServer((req, res) => {
 
   const filepath = join(DIST_DIR, pathname);
 
-  // API paths that the game fetches from the server — proxy to production
-  // in dev mode since OVERLAY_SCRIPT's rewrite layer isn't active outside Tauri
+  // API paths that the game fetches from the server. In Tauri dev mode these
+  // are handled by the native allowlisted HTTP proxy instead of the dev server.
   const apiPrefixes = ['/profile', '/bots', '/leaderboards', '/tilemap/',
     '/game-history/', '/chat-history/'];
   if (apiPrefixes.some(p => pathname.startsWith(p))) {
-    const target = 'https://pokemon-auto-chess.com' + req.url;
-    res.writeHead(302, { Location: target });
-    res.end();
+    res.writeHead(501, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'PACDeluxe native proxy required',
+      message: 'Run this build inside Tauri so the native upstream proxy can service API requests.'
+    }));
     return;
   }
 

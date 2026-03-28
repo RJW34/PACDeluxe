@@ -2,8 +2,9 @@
 /**
  * Frontend Build Script
  *
- * Builds Pokemon Auto Chess (the 8-player auto-battler) for the Tauri wrapper.
- * Injects a performance overlay - no game logic modifications.
+ * Builds the upstream Pokemon Auto Chess client for the PACDeluxe local-build
+ * desktop architecture. Applies the canonical non-gameplay patch inventory
+ * declared in scripts/build-manifest.js.
  */
 
 import { execSync } from 'child_process';
@@ -11,13 +12,14 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { get as httpsGet } from 'https';
+import { REQUIRED_FIREBASE_KEYS, UPSTREAM_PATCHES } from './build-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT = join(__dirname, '..');
 const UPSTREAM_DIR = join(ROOT, 'upstream-game');
 const DIST_DIR = join(ROOT, 'dist');
+const FIREBASE_CONFIG_FILE = join(ROOT, 'config', 'firebase-client.env');
 const GAME_CONTAINER_FILE = join(
   UPSTREAM_DIR,
   'app',
@@ -78,6 +80,10 @@ function log(msg) {
   console.log(`[build] ${msg}`);
 }
 
+function getPatchMeta(id) {
+  return UPSTREAM_PATCHES.find((patch) => patch.id === id) ?? { id, summary: id };
+}
+
 function replaceOrThrow(content, search, replacement, label) {
   if (!content.includes(search)) {
     throw new Error(`Unable to apply upstream patch (${label}): marker not found`);
@@ -85,7 +91,87 @@ function replaceOrThrow(content, search, replacement, label) {
   return content.replace(search, replacement);
 }
 
+function parseEnvFile(content) {
+  const values = {};
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf('=');
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    let value = line.slice(separatorIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    values[key] = value;
+  }
+
+  return values;
+}
+
+function resolveFirebaseConfig() {
+  const sources = [{
+    name: 'process.env',
+    values: process.env,
+  }];
+
+  if (existsSync(FIREBASE_CONFIG_FILE)) {
+    sources.push({
+      name: 'config/firebase-client.env',
+      values: parseEnvFile(readFileSync(FIREBASE_CONFIG_FILE, 'utf-8')),
+    });
+  }
+
+  const upstreamEnvFile = join(UPSTREAM_DIR, '.env');
+  if (existsSync(upstreamEnvFile)) {
+    sources.push({
+      name: 'upstream-game/.env',
+      values: parseEnvFile(readFileSync(upstreamEnvFile, 'utf-8')),
+    });
+  }
+
+  const resolved = {};
+  const resolvedSources = [];
+
+  for (const key of REQUIRED_FIREBASE_KEYS) {
+    for (const source of sources) {
+      const candidate = source.values[key];
+      if (typeof candidate === 'string' && candidate.trim() !== '') {
+        resolved[key] = candidate.trim();
+        resolvedSources.push(`${key}<=${source.name}`);
+        break;
+      }
+    }
+  }
+
+  const missingKeys = REQUIRED_FIREBASE_KEYS.filter((key) => !resolved[key]);
+  if (missingKeys.length > 0) {
+    throw new Error(
+      `Missing Firebase client configuration: ${missingKeys.join(', ')}.\n` +
+      'Provide config/firebase-client.env, environment variables, or a pre-existing upstream-game/.env.\n' +
+      'See config/firebase-client.env.example for the required keys.'
+    );
+  }
+
+  return {
+    values: resolved,
+    resolvedSources,
+  };
+}
+
 function applyUpstreamPatches() {
+  log(`Applying ${UPSTREAM_PATCHES.length} build-time patches from the canonical manifest`);
+
   if (!existsSync(GAME_CONTAINER_FILE)) {
     throw new Error(`Upstream file missing: ${GAME_CONTAINER_FILE}`);
   }
@@ -105,7 +191,7 @@ function applyUpstreamPatches() {
       GAME_CONTAINER_FILE,
       gameContainerContent.replace(resizeHook, startupResizeHook)
     );
-    log('Applied upstream patch: force initial Phaser resize');
+    log(`Applied upstream patch: ${getPatchMeta('phaser-initial-resize').id}`);
   }
 
   if (!existsSync(BOOSTER_COMPONENT_FILE)) {
@@ -189,7 +275,7 @@ function applyUpstreamPatches() {
     );
 
     writeFileSync(BOOSTER_COMPONENT_FILE, boosterContent);
-    log('Applied upstream patch: booster Equip button for new avatar cards');
+    log(`Applied upstream patch: ${getPatchMeta('booster-equip-button').id}`);
   }
 
   // === PATCH 3: Hardcode Colyseus server URL for local-build architecture ===
@@ -209,7 +295,7 @@ function applyUpstreamPatches() {
       'network server URL'
     );
     writeFileSync(NETWORK_FILE, networkContent);
-    log('Applied upstream patch: hardcoded Colyseus server URL for local serving');
+    log(`Applied upstream patch: ${getPatchMeta('network-endpoint-hardcode').id}`);
   }
 
   // === PATCH 4: Hardcode signInSuccessUrl for local-build architecture ===
@@ -224,7 +310,7 @@ function applyUpstreamPatches() {
           'signInSuccessUrl: "https://pokemon-auto-chess.com/lobby"'
         );
         writeFileSync(LOGIN_FILE, loginContent);
-        log('Applied upstream patch: hardcoded signInSuccessUrl for local serving');
+        log(`Applied upstream patch: ${getPatchMeta('login-success-url').id}`);
       }
     }
   }
@@ -241,7 +327,7 @@ function applyUpstreamPatches() {
           'window.location.href = "https://pokemon-auto-chess.com/lobby"'
         );
         writeFileSync(ANONYMOUS_BUTTON_FILE, anonContent);
-        log('Applied upstream patch: anonymous login redirect for local serving');
+        log(`Applied upstream patch: ${getPatchMeta('anonymous-login-redirect').id}`);
       }
     }
   }
@@ -258,102 +344,25 @@ function applyUpstreamPatches() {
           'server.url?.startsWith("https://pokemon-auto-chess.com")'
         );
         writeFileSync(SERVERS_LIST_FILE, serversContent);
-        log('Applied upstream patch: server detection for local serving');
+        log(`Applied upstream patch: ${getPatchMeta('server-detection-origin').id}`);
       }
     }
   }
 }
 
 /**
- * Fetch a URL and return the response body as a string.
+ * Ensure Firebase client config exists for the upstream build.
+ * PACDeluxe no longer scrapes these values from the live production site.
  */
-function fetchText(url) {
-  return new Promise((resolve, reject) => {
-    httpsGet(url, (res) => {
-      // Follow redirects
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        fetchText(res.headers.location).then(resolve, reject);
-        return;
-      }
-      if (res.statusCode !== 200) {
-        reject(new Error(`HTTP ${res.statusCode} fetching ${url}`));
-        return;
-      }
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
-      res.on('end', () => resolve(data));
-    }).on('error', reject);
-  });
-}
-
-/**
- * Extract Firebase client config from the live Pokemon Auto Chess site.
- * These are public client-side values (visible in any browser's devtools).
- * Writes upstream-game/.env so esbuild can inject them into the bundle.
- */
-async function ensureFirebaseConfig() {
+function ensureFirebaseConfig() {
   const envFile = join(UPSTREAM_DIR, '.env');
+  const { values, resolvedSources } = resolveFirebaseConfig();
+  const envContent = REQUIRED_FIREBASE_KEYS
+    .map((key) => `${key}="${values[key].replace(/"/g, '\\"')}"`)
+    .join('\n') + '\n';
 
-  // Skip if .env already has Firebase config
-  if (existsSync(envFile)) {
-    const existing = readFileSync(envFile, 'utf-8');
-    if (existing.includes('FIREBASE_API_KEY=') && !existing.includes('FIREBASE_API_KEY=""')) {
-      log('Firebase config already present in .env');
-      return;
-    }
-  }
-
-  log('Fetching Firebase config from live site...');
-
-  try {
-    // Fetch the HTML to find the JS bundle filename
-    const html = await fetchText('https://pokemon-auto-chess.com');
-    const scriptMatch = html.match(/src="(index-[^"]+\.js)"/);
-    if (!scriptMatch) {
-      throw new Error('Could not find JS bundle URL in live site HTML');
-    }
-
-    // Fetch the JS bundle and extract Firebase config values
-    const jsUrl = `https://pokemon-auto-chess.com/${scriptMatch[1]}`;
-    log(`Fetching bundle: ${scriptMatch[1]}`);
-    const js = await fetchText(jsUrl);
-
-    const extract = (key) => {
-      const m = js.match(new RegExp(key + ':"([^"]+)"'));
-      return m ? m[1] : '';
-    };
-
-    const config = {
-      FIREBASE_API_KEY: extract('apiKey'),
-      FIREBASE_AUTH_DOMAIN: extract('authDomain'),
-      FIREBASE_PROJECT_ID: extract('projectId'),
-      FIREBASE_STORAGE_BUCKET: extract('storageBucket'),
-      FIREBASE_MESSAGING_SENDER_ID: extract('messagingSenderId'),
-      FIREBASE_APP_ID: extract('appId'),
-    };
-
-    // Validate we got the essential values
-    if (!config.FIREBASE_API_KEY || !config.FIREBASE_PROJECT_ID) {
-      throw new Error('Could not extract Firebase config from live site bundle');
-    }
-
-    // Write .env file
-    const envContent = Object.entries(config)
-      .map(([k, v]) => `${k}="${v}"`)
-      .join('\n') + '\n';
-    writeFileSync(envFile, envContent);
-    log('Firebase config written to upstream-game/.env');
-  } catch (e) {
-    // If we can't fetch, check if there's a usable .env already
-    if (existsSync(envFile)) {
-      log(`Warning: could not fetch live config (${e.message}), using existing .env`);
-    } else {
-      throw new Error(
-        `Firebase config required but could not be fetched: ${e.message}\n` +
-        'Create upstream-game/.env manually with FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, etc.'
-      );
-    }
-  }
+  writeFileSync(envFile, envContent);
+  log(`Firebase config written to upstream-game/.env (${resolvedSources.join(', ')})`);
 }
 
 async function main() {
@@ -365,7 +374,7 @@ async function main() {
   }
 
   // Ensure Firebase client config is available for the build
-  await ensureFirebaseConfig();
+  ensureFirebaseConfig();
 
   applyUpstreamPatches();
 

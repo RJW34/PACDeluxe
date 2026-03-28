@@ -1,187 +1,73 @@
-# Pokemon Auto Chess Deluxe
+# PACDeluxe Docs
 
-A native desktop client for [Pokemon Auto Chess](https://github.com/keldaanCommunity/pokemonAutoChess) with performance optimizations and quality-of-life features.
+PACDeluxe is a local-build desktop client for Pokemon Auto Chess.
 
-## Overview
+## Current Architecture
 
-PACDeluxe bundles the upstream Pokemon Auto Chess game into a native desktop app that provides:
+PACDeluxe currently consists of:
 
-- **Local asset serving** — Game assets bundled locally for zero network latency on load
-- **GPU-optimized rendering** — Chromium GPU rasterization and zero-copy flags
-- **Lower system overhead** — Process priority elevation, timer resolution, power throttle bypass
-- **Better CPU utilization** — WebView2 child process priority management
-- **Consistent performance** — Background throttling disabled at the Chromium level
+- a Tauri v2 desktop shell
+- a locally built upstream frontend served from `dist/`
+- a Rust native backend for system tuning, window control, updater behavior, and the allowlisted upstream HTTP proxy
+- an injected runtime layer in `src-tauri/src/main.rs`
+- a build pipeline in `scripts/build-frontend.js`
 
-## Non-Cheating Guarantee
+## Source of Truth
 
-**This client does NOT provide any competitive advantage.**
+- Architecture decision: `docs/ADR-0001-local-build-architecture.md`
+- Patch inventory: `docs/PATCH_MANIFEST.md`
+- Transparency and runtime behavior: `TRANSPARENCY.md`
+- Fair-play constraints: `docs/ETHICS_AND_COMPLIANCE.md`
+- Release process: `docs/RELEASE_CHECKLIST.md`
 
-The following are explicitly forbidden and are not implemented:
+## Supported Platform Matrix
 
-- Reading or modifying hidden game state
-- Accessing opponent information
-- Altering RNG or timing logic
-- Automating gameplay decisions
-- Modifying network traffic
-- Bypassing server validation
+- Windows: supported and released
+- Linux: local experimentation only, public release paused
 
-All gameplay logic remains server-authoritative and unchanged.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Tauri Desktop Shell                     │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                  WebView (Frontend)                   │   │
-│  │  ┌───────────────────────────────────────────────┐   │   │
-│  │  │   Pokemon Auto Chess (build-time patches)      │   │   │
-│  │  │  ┌─────────────────────────────────────────┐  │   │   │
-│  │  │  │              Phaser 3 Game               │  │   │   │
-│  │  │  └─────────────────────────────────────────┘  │   │   │
-│  │  └───────────────────────────────────────────────┘   │   │
-│  │  ┌───────────────────────────────────────────────┐   │   │
-│  │  │       Injected Runtime Layer (OVERLAY_SCRIPT)  │   │   │
-│  │  │  • Performance Overlay  • Asset Cache          │   │   │
-│  │  │  • Session Recovery     • Booster Flip All     │   │   │
-│  │  │  • Auto-Updater         • Window Controls      │   │   │
-│  │  └───────────────────────────────────────────────┘   │   │
-│  └─────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Native Performance Backend              │   │
-│  │  • Process priority     • Timer resolution          │   │
-│  │  • System monitoring    • Power management          │   │
-│  │  • GPU monitoring       • HDR detection             │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Installation
-
-### Prerequisites
-
-- Node.js 20+
-- Rust 1.70+
-- Platform-specific build tools:
-  - Windows: Visual Studio Build Tools
-  - Linux: build-essential, libwebkit2gtk-4.1-dev
-
-### Build Steps
+## Build Flow
 
 ```bash
-# Clone the repository
-git clone https://github.com/RJW34/PACDeluxe
-cd PACDeluxe
-
-# Install dependencies
 npm install
-
-# Sync upstream game
 npm run sync-upstream
 cd upstream-game && npm install && cd ..
-
-# Build frontend (applies patches, bundles to dist/)
 npm run build:frontend
-
-# Development mode
 npm run tauri:dev
-
-# Production build
-npm run tauri:build
 ```
 
-## Usage
+The frontend build:
 
-### Development
+1. resolves Firebase client config from explicit inputs
+2. applies the canonical non-gameplay patch set
+3. builds upstream assets into `dist/`
+4. generates the local `index.html` used by Tauri
 
-```bash
-# Build frontend with patches
-npm run build:frontend
+## Runtime Flow
 
-# Start Tauri in development mode
-npm run tauri:dev
-
-# Or use the dev server
-npm run dev:server
-```
-
-### Production
-
-```bash
-# Build production release
-npm run build
-
-# Run source scanning + optional replay validation
-npm run validate
-
-# Run ethical safeguard tests
-npm test
-```
-
-### Keyboard Shortcuts
-
-- `Ctrl+Shift+P`: Toggle performance overlay
-- `F11`: Toggle fullscreen mode
-- `Shift+F11`: Toggle borderless windowed mode
-- Standard game shortcuts remain unchanged
-
-## Performance Optimizations
-
-### Rendering (Chromium flags)
-- GPU rasterization enabled
-- Zero-copy rasterization (reduces memory copies)
-- Background timer throttling disabled
-- Renderer backgrounding disabled
-
-### Assets
-- Local asset serving (zero network latency)
-- In-memory fetch cache (128MB, version-aware)
-- Session-based asset prewarming
-- Nearest-neighbor texture filtering for pixel art
-
-### System (Rust backend)
-- Above-normal process priority
-- High-resolution timer (1ms)
-- Power throttling disabled
-- DWM transition optimizations
-- WebView2 child process priority elevation
-
-## Build-Time Patches
-
-The build process applies three idempotent patches to the upstream source:
-
-1. **Phaser resize** — Forces initial resize call in `game-container.ts`
-2. **Booster Equip** — Adds avatar equip button in `booster.tsx`
-3. **Server URL** — Hardcodes WebSocket URL in `network.ts` for local serving
-
-No game logic, RNG, matchmaking, or competitive behavior is modified.
+1. Tauri loads `dist/index.html`
+2. native system optimizations are applied
+3. the injected PACDeluxe runtime is loaded from `src-tauri/src/main.rs`
+4. required upstream HTTP calls go through a native allowlisted proxy command
+5. gameplay still connects to the official Colyseus server
 
 ## Validation
 
-Before any release, run the validation harness:
+Use:
 
 ```bash
-npm run validate
+npm run verify
 ```
 
-This performs:
-1. Static source scanning for forbidden patterns (required)
-2. Replay-based determinism comparison when replay artifacts are present (optional)
+This includes:
 
-## License
+- `npm test`
+- `npm run validate`
+- `npm run verify:manifest`
+- `cargo check --manifest-path src-tauri/Cargo.toml --message-format short`
 
-BSD-3-Clause (matching upstream)
+## Notes For Contributors
 
-## Contributing
-
-Contributions must:
-1. Pass all ethical safeguard tests
-2. Not modify competitive gameplay logic
-3. Include appropriate tests
-4. Use idempotent build-time patches for any upstream changes
-
-## Disclaimer
-
-This is an unofficial client. Pokemon Auto Chess is developed by the [keldaanCommunity](https://github.com/keldaanCommunity/pokemonAutoChess).
-
-All Pokemon-related content is (c) Nintendo/Creatures Inc./GAME FREAK Inc.
+- Do not add undocumented upstream patches.
+- Do not reintroduce `--disable-web-security`.
+- Do not add build-time scraping of production configuration.
+- Keep docs pointing at `docs/PATCH_MANIFEST.md` instead of duplicating patch counts in multiple places.

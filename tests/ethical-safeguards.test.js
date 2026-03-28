@@ -1,11 +1,11 @@
 /**
  * Ethical Safeguards Tests
  *
- * These tests scan source files in src/ and src-tauri/src/ for forbidden
- * patterns that would indicate cheating functionality.
+ * These tests scan PACDeluxe-owned source files for forbidden patterns that
+ * would indicate cheating functionality.
  *
- * Scan scope: src/, src-tauri/src/ (and subdirectories)
- * Excluded: scripts/, docs/, tests/, dist/, upstream-game/, node_modules/, target/, validation/
+ * Scan scope: src/ (when present), scripts/, src-tauri/src/ (and subdirectories)
+ * Excluded: docs/, tests/, dist/, upstream-game/, node_modules/, target/, validation/
  *
  * CRITICAL: All tests MUST pass before any release.
  * Failure indicates potential cheating functionality that must be removed.
@@ -16,6 +16,7 @@ import assert from 'node:assert';
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { verifyBuildManifest } from '../scripts/verify-build-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,8 +39,8 @@ function getSourceFiles(dir, extensions = ['.js', '.ts', '.rs']) {
 
       // Skip non-source directories
       // Excluded: third-party (node_modules), upstream source (upstream-game), build output (dist, target),
-      // build tooling (scripts), documentation (docs), test code (tests), validation artifacts, git internals
-      const skipDirs = ['node_modules', 'upstream-game', '.git', 'tests', 'target', 'dist', 'scripts', 'docs', 'validation'];
+      // documentation (docs), test code (tests), validation artifacts, git internals
+      const skipDirs = ['node_modules', 'upstream-game', '.git', 'tests', 'target', 'dist', 'docs', 'validation'];
       if (skipDirs.includes(entry)) {
         continue;
       }
@@ -134,8 +135,15 @@ describe('Ethical Safeguards', () => {
     ];
 
     it('should not contain game state manipulation code', () => {
+      const exemptPatternDefinitionFiles = ['ethical-safeguards.test.js', 'validate-determinism.js'];
+
       for (const file of sourceFiles) {
         try {
+          const fileName = file.split(/[/\\]/).pop();
+          if (exemptPatternDefinitionFiles.includes(fileName)) {
+            continue;
+          }
+
           const content = readFileSync(file, 'utf-8');
           const violations = findForbiddenPatterns(content, forbiddenPatterns);
 
@@ -259,17 +267,17 @@ describe('Ethical Safeguards', () => {
 
   describe('No Network Manipulation', () => {
     it('should not intercept or modify network traffic', () => {
-      // These files are allowed to intercept fetch for caching static assets
-      // (images, sounds, etc.) - this is a legitimate performance optimization
-      // main.rs contains inline JavaScript for the same purpose
-      const allowedFetchIntercept = ['asset-cache.js', 'main.rs'];
+      // main.rs contains the PACDeluxe runtime, including an allowlisted proxy
+      // wrapper for official upstream HTTP requests.
+      const allowedFetchIntercept = ['main.rs'];
 
       for (const file of sourceFiles) {
         try {
           const content = readFileSync(file, 'utf-8');
           const fileName = file.split(/[/\\]/).pop();
 
-          // For asset-cache.js, only check for malicious patterns, not fetch intercept
+          // The injected runtime in main.rs is allowed to wrap fetch for
+          // allowlisted PACDeluxe runtime behavior.
           const networkPatterns = allowedFetchIntercept.includes(fileName)
             ? [
                 /XMLHttpRequest\.prototype/gi,
@@ -389,5 +397,39 @@ describe('Build Safety', () => {
         }
       }
     }
+  });
+});
+
+describe('Architecture Guardrails', () => {
+  it('should keep the patch manifest and docs in sync', () => {
+    const result = verifyBuildManifest();
+    assert.strictEqual(
+      result.ok,
+      true,
+      `Build manifest verification failed:\n${result.errors.map((error) => `  - ${error}`).join('\n')}`
+    );
+  });
+
+  it('should not rely on disable-web-security in the runtime', () => {
+    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+    assert.strictEqual(
+      mainRs.includes('--disable-web-security'),
+      false,
+      'The runtime should not depend on the WebView browser-security bypass flag'
+    );
+  });
+
+  it('should not scrape Firebase config from the live production site at build time', () => {
+    const buildScript = readFileSync(join(ROOT, 'scripts', 'build-frontend.js'), 'utf-8');
+    assert.strictEqual(
+      buildScript.includes('Fetching Firebase config from live site'),
+      false,
+      'Builds must use explicit Firebase config instead of scraping production'
+    );
+    assert.strictEqual(
+      buildScript.includes('https://pokemon-auto-chess.com/${scriptMatch[1]}'),
+      false,
+      'Builds must not parse the production bundle for config'
+    );
   });
 });

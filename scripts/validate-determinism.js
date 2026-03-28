@@ -2,22 +2,15 @@
 /**
  * Determinism Validation Harness
  *
- * Validates source code for forbidden patterns and optionally compares
- * game replays for determinism when replay artifacts are present.
- *
- * Validation checks:
- * 1. Static source scanning for forbidden patterns (required)
- * 2. Replay-based state comparison (optional, when replay files exist):
- *    - State hash comparison per tick
- *    - RNG call order verification
- *    - Final game outcome matching
+ * Validates PACDeluxe source code for forbidden patterns and optionally
+ * compares replay artifacts when they are present.
  */
 
-import { execSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs';
-import { join, dirname } from 'path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { verifyBuildManifest } from './verify-build-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -26,28 +19,11 @@ const VALIDATION_DIR = join(ROOT, 'validation');
 const REPLAYS_DIR = join(VALIDATION_DIR, 'replays');
 const REPORTS_DIR = join(VALIDATION_DIR, 'reports');
 
-// Ensure directories exist
-[VALIDATION_DIR, REPLAYS_DIR, REPORTS_DIR].forEach(dir => {
+[VALIDATION_DIR, REPLAYS_DIR, REPORTS_DIR].forEach((dir) => {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
 });
-
-/**
- * @typedef {Object} GameState
- * @property {number} tick
- * @property {string} hash
- * @property {Object} players
- * @property {Object} board
- */
-
-/**
- * @typedef {Object} ValidationResult
- * @property {boolean} passed
- * @property {string[]} errors
- * @property {string[]} warnings
- * @property {Object} metrics
- */
 
 class DeterminismValidator {
   constructor() {
@@ -61,39 +37,26 @@ class DeterminismValidator {
     };
   }
 
-  /**
-   * Hash a game state object
-   * @param {Object} state
-   * @returns {string}
-   */
   hashState(state) {
-    // Create a deterministic string representation
     const normalized = JSON.stringify(state, Object.keys(state).sort());
     return createHash('sha256').update(normalized).digest('hex').slice(0, 16);
   }
 
-  /**
-   * Compare two game states
-   * @param {GameState} native
-   * @param {GameState} browser
-   * @returns {boolean}
-   */
-  compareStates(native, browser) {
+  compareStates(nativeState, browserState) {
     this.metrics.ticksCompared++;
 
-    if (native.tick !== browser.tick) {
-      this.errors.push(`Tick mismatch: native=${native.tick}, browser=${browser.tick}`);
+    if (nativeState.tick !== browserState.tick) {
+      this.errors.push(`Tick mismatch: native=${nativeState.tick}, browser=${browserState.tick}`);
       return false;
     }
 
-    const nativeHash = this.hashState(native);
-    const browserHash = this.hashState(browser);
+    const nativeHash = this.hashState(nativeState);
+    const browserHash = this.hashState(browserState);
 
     if (nativeHash !== browserHash) {
       this.metrics.statesDiverged++;
       this.errors.push(
-        `State divergence at tick ${native.tick}: ` +
-        `native=${nativeHash}, browser=${browserHash}`
+        `State divergence at tick ${nativeState.tick}: native=${nativeHash}, browser=${browserHash}`
       );
       return false;
     }
@@ -102,12 +65,6 @@ class DeterminismValidator {
     return true;
   }
 
-  /**
-   * Verify RNG call sequence
-   * @param {number[]} nativeRng
-   * @param {number[]} browserRng
-   * @returns {boolean}
-   */
   verifyRngSequence(nativeRng, browserRng) {
     if (nativeRng.length !== browserRng.length) {
       this.errors.push(
@@ -129,27 +86,15 @@ class DeterminismValidator {
     return true;
   }
 
-  /**
-   * Load a replay file
-   * @param {string} path
-   * @returns {Object|null}
-   */
   loadReplay(path) {
     try {
-      const content = readFileSync(path, 'utf-8');
-      return JSON.parse(content);
-    } catch (error) {
+      return JSON.parse(readFileSync(path, 'utf-8'));
+    } catch {
       this.errors.push(`Failed to load replay: ${path}`);
       return null;
     }
   }
 
-  /**
-   * Compare two replay files
-   * @param {string} nativePath
-   * @param {string} browserPath
-   * @returns {ValidationResult}
-   */
   compareReplays(nativePath, browserPath) {
     const nativeReplay = this.loadReplay(nativePath);
     const browserReplay = this.loadReplay(browserPath);
@@ -158,7 +103,6 @@ class DeterminismValidator {
       return this.getResult();
     }
 
-    // Compare each tick
     const maxTicks = Math.max(
       nativeReplay.states?.length || 0,
       browserReplay.states?.length || 0
@@ -176,12 +120,10 @@ class DeterminismValidator {
       this.compareStates(nativeState, browserState);
     }
 
-    // Compare RNG sequences
     if (nativeReplay.rngCalls && browserReplay.rngCalls) {
       this.verifyRngSequence(nativeReplay.rngCalls, browserReplay.rngCalls);
     }
 
-    // Compare final outcomes
     if (nativeReplay.outcome && browserReplay.outcome) {
       if (JSON.stringify(nativeReplay.outcome) !== JSON.stringify(browserReplay.outcome)) {
         this.errors.push('Final game outcome diverged');
@@ -191,10 +133,6 @@ class DeterminismValidator {
     return this.getResult();
   }
 
-  /**
-   * Get the validation result
-   * @returns {ValidationResult}
-   */
   getResult() {
     return {
       passed: this.errors.length === 0,
@@ -204,11 +142,6 @@ class DeterminismValidator {
     };
   }
 
-  /**
-   * Generate a validation report
-   * @param {ValidationResult} result
-   * @returns {string}
-   */
   generateReport(result) {
     const timestamp = new Date().toISOString();
     const status = result.passed ? 'PASSED' : 'FAILED';
@@ -230,16 +163,16 @@ METRICS:
 
     if (result.errors.length > 0) {
       report += `ERRORS (${result.errors.length}):\n`;
-      result.errors.forEach((error, i) => {
-        report += `  ${i + 1}. ${error}\n`;
+      result.errors.forEach((error, index) => {
+        report += `  ${index + 1}. ${error}\n`;
       });
       report += '\n';
     }
 
     if (result.warnings.length > 0) {
       report += `WARNINGS (${result.warnings.length}):\n`;
-      result.warnings.forEach((warning, i) => {
-        report += `  ${i + 1}. ${warning}\n`;
+      result.warnings.forEach((warning, index) => {
+        report += `  ${index + 1}. ${warning}\n`;
       });
       report += '\n';
     }
@@ -254,52 +187,43 @@ ${result.passed ? 'VALIDATION PASSED - Safe to deploy' : 'VALIDATION FAILED - DO
   }
 }
 
-/**
- * Ethical compliance checker - performs REAL scanning of source files
- */
 class EthicalComplianceChecker {
   constructor() {
     this.violations = [];
     this.scannedFiles = 0;
   }
 
-  /**
-   * Get all source files recursively
-   * @param {string} dir
-   * @param {string[]} extensions
-   * @returns {string[]}
-   */
   getSourceFiles(dir, extensions = ['.js', '.ts', '.rs']) {
     const files = [];
+
     try {
       const entries = readdirSync(dir);
       for (const entry of entries) {
-        // Skip directories we don't want to scan
         if (['node_modules', 'upstream-game', '.git', 'tests', 'target', 'dist'].includes(entry)) {
           continue;
         }
+
         const fullPath = join(dir, entry);
         try {
           const stat = statSync(fullPath);
           if (stat.isDirectory()) {
             files.push(...this.getSourceFiles(fullPath, extensions));
-          } else if (extensions.some(ext => entry.endsWith(ext))) {
+          } else if (extensions.some((ext) => entry.endsWith(ext))) {
             files.push(fullPath);
           }
-        } catch { /* skip files we can't stat */ }
+        } catch {
+          // Skip files we cannot inspect.
+        }
       }
-    } catch { /* directory doesn't exist */ }
+    } catch {
+      // Directory does not exist.
+    }
+
     return files;
   }
 
-  /**
-   * Scan source files for violations
-   * @param {string} directory
-   * @returns {boolean}
-   */
   scanDirectory(directory) {
-    // Patterns that would indicate cheating functionality
-    // Note: window.fetch reassignment is allowed for asset caching (transparent optimization)
+    const exemptPatternDefinitionFiles = new Set(['validate-determinism.js']);
     const forbiddenPatterns = [
       { pattern: /opponent\.private/gi, desc: 'accessing opponent private data' },
       { pattern: /enemy\.hidden/gi, desc: 'accessing hidden enemy data' },
@@ -316,10 +240,15 @@ class EthicalComplianceChecker {
     console.log(`[EthicalChecker] Scanning ${directory}...`);
 
     const files = this.getSourceFiles(directory);
-    this.scannedFiles = files.length;
+    this.scannedFiles += files.length;
 
     for (const file of files) {
       try {
+        const fileName = file.split(/[/\\]/).pop();
+        if (exemptPatternDefinitionFiles.has(fileName)) {
+          continue;
+        }
+
         const content = readFileSync(file, 'utf-8');
         const lines = content.split('\n');
 
@@ -329,21 +258,18 @@ class EthicalComplianceChecker {
             if (pattern.test(line)) {
               this.violations.push(`${file}:${i + 1} - ${desc}`);
             }
-            // Reset regex lastIndex for global patterns
             pattern.lastIndex = 0;
           }
         }
-      } catch { /* skip files we can't read */ }
+      } catch {
+        // Skip files we cannot read.
+      }
     }
 
     console.log(`[EthicalChecker] Scanned ${this.scannedFiles} files`);
     return this.violations.length === 0;
   }
 
-  /**
-   * Get violations
-   * @returns {string[]}
-   */
   getViolations() {
     return this.violations;
   }
@@ -358,32 +284,40 @@ async function main() {
   const ethicsChecker = new EthicalComplianceChecker();
   let replayComparisonSkipped = false;
 
-  // Check for ethical compliance
-  console.log('[1/3] Checking ethical compliance...');
-  const ethicsPass = ethicsChecker.scanDirectory(join(ROOT, 'src'));
+  console.log('[1/4] Verifying build manifest and documentation...');
+  const manifestResult = verifyBuildManifest();
+  if (!manifestResult.ok) {
+    console.error('BUILD MANIFEST VERIFICATION FAILED');
+    manifestResult.errors.forEach((error) => console.error(`  - ${error}`));
+    process.exit(1);
+  }
+  console.log('  ✓ Build manifest verification passed\n');
+
+  console.log('[2/4] Checking ethical compliance...');
+  let ethicsPass = true;
+  if (existsSync(join(ROOT, 'src'))) {
+    ethicsPass = ethicsChecker.scanDirectory(join(ROOT, 'src')) && ethicsPass;
+  }
+  ethicsPass = ethicsChecker.scanDirectory(join(ROOT, 'scripts')) && ethicsPass;
   if (!ethicsPass) {
     console.error('ETHICAL COMPLIANCE CHECK FAILED');
-    ethicsChecker.getViolations().forEach(v => console.error(`  - ${v}`));
+    ethicsChecker.getViolations().forEach((violation) => console.error(`  - ${violation}`));
     process.exit(1);
   }
   console.log('  ✓ Ethical compliance check passed\n');
 
-  // Check for replay files
-  console.log('[2/3] Checking for validation replays...');
+  console.log('[3/4] Checking for validation replays...');
   const nativeReplay = join(REPLAYS_DIR, 'native-latest.json');
   const browserReplay = join(REPLAYS_DIR, 'browser-latest.json');
 
   if (!existsSync(nativeReplay) || !existsSync(browserReplay)) {
-    console.log('  ⚠ No replay files found for comparison');
+    console.log('  ! No replay files found for comparison');
     console.log('  Note: Replay comparison requires recording games in both clients');
-    console.log('  This is optional for a WebView wrapper that doesn\'t modify game logic');
     console.log('  Skipping replay comparison...\n');
     replayComparisonSkipped = true;
   } else {
     console.log('  Found replay files, comparing...');
     const result = validator.compareReplays(nativeReplay, browserReplay);
-
-    // Generate report
     const report = validator.generateReport(result);
     const reportPath = join(REPORTS_DIR, `validation-${Date.now()}.txt`);
     writeFileSync(reportPath, report);
@@ -397,19 +331,16 @@ async function main() {
     console.log('  ✓ Replay comparison passed\n');
   }
 
-  // Final check - scan Rust code as well
-  console.log('[3/3] Running final integrity checks...');
-
+  console.log('[4/4] Running final integrity checks...');
   const rustChecker = new EthicalComplianceChecker();
   const rustPass = rustChecker.scanDirectory(join(ROOT, 'src-tauri', 'src'));
 
   if (!rustPass) {
     console.error('RUST CODE INTEGRITY CHECK FAILED');
-    rustChecker.getViolations().forEach(v => console.error(`  - ${v}`));
+    rustChecker.getViolations().forEach((violation) => console.error(`  - ${violation}`));
     process.exit(1);
   }
 
-  // All checks passed
   const totalFilesScanned = ethicsChecker.scannedFiles + rustChecker.scannedFiles;
   console.log(`  ✓ Scanned ${totalFilesScanned} source files`);
   console.log('  ✓ No gameplay modifications detected');
@@ -420,19 +351,20 @@ async function main() {
   console.log('================================================================================');
   if (replayComparisonSkipped) {
     console.log('PARTIAL VALIDATION PASSED');
+    console.log('  - Build manifest verification: PASSED');
     console.log('  - Source code scan: PASSED');
     console.log('  - Replay comparison: SKIPPED (no replay files)');
     console.log('');
-    console.log('This client bundles the upstream game with build-time patches');
-    console.log('(resize fix, booster Equip, server URL). No gameplay-affecting modifications detected.');
-    console.log('Full replay validation is optional when replay artifacts are not present.');
+    console.log('This client bundles the upstream game and uses a native allowlisted upstream proxy.');
+    console.log('No gameplay-affecting modifications were detected in the scanned code.');
+    console.log('Replay comparison still needs fixtures before validation can be considered complete.');
   } else {
     console.log('FULL VALIDATION PASSED - Safe to deploy');
   }
   console.log('================================================================================');
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error('Validation error:', error);
   process.exit(1);
 });

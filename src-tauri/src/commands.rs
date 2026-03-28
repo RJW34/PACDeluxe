@@ -8,11 +8,15 @@ use crate::performance::{
     GpuStats, get_gpu_stats as get_gpu_stats_impl,
     HdrInfo, get_hdr_info,
 };
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue},
+    Method, Url,
+};
 use serde::{Serialize, Deserialize};
 use tauri::{State, Manager, AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 use tracing::{debug, warn, info};
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 /// Window display mode
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -42,6 +46,155 @@ impl WindowMode {
             _ => WindowMode::Windowed,
         }
     }
+}
+
+const PROD_ORIGIN: &str = "https://pokemon-auto-chess.com";
+const PROXY_API_PATHS: &[&str] = &[
+    "/profile",
+    "/bots",
+    "/leaderboards",
+    "/tilemap/",
+    "/game-history/",
+    "/chat-history/",
+];
+const COMMUNITY_SERVERS_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md";
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProxyHttpRequest {
+    pub url: String,
+    pub method: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProxyHttpResponse {
+    pub url: String,
+    pub status: u16,
+    pub status_text: String,
+    pub headers: HashMap<String, String>,
+    pub body: String,
+}
+
+fn is_allowlisted_proxy_path(path: &str) -> bool {
+    PROXY_API_PATHS.iter().any(|prefix| path.starts_with(prefix))
+}
+
+fn resolve_proxy_target(url: &str, method: &str) -> Result<Url, String> {
+    let normalized_method = method.to_ascii_uppercase();
+
+    if url.starts_with('/') {
+        if !is_allowlisted_proxy_path(url) {
+            return Err(format!("Proxy path not allowlisted: {}", url));
+        }
+
+        return Url::parse(&format!("{}{}", PROD_ORIGIN, url))
+            .map_err(|e| format!("Invalid proxied PAC URL: {}", e));
+    }
+
+    let parsed = Url::parse(url).map_err(|e| format!("Invalid proxy URL: {}", e))?;
+    if parsed.scheme() != "https" {
+        return Err("Only https proxy targets are allowed".to_string());
+    }
+
+    let host = parsed.host_str().unwrap_or_default();
+    let path = parsed.path();
+    let is_read_only = matches!(normalized_method.as_str(), "GET" | "HEAD");
+
+    if host == "pokemon-auto-chess.com" {
+        if is_allowlisted_proxy_path(path) || (is_read_only && path == "/status") {
+            return Ok(parsed);
+        }
+    }
+
+    if is_read_only && parsed.as_str() == COMMUNITY_SERVERS_MANIFEST_URL {
+        return Ok(parsed);
+    }
+
+    Err(format!("Proxy target not allowlisted: {}", url))
+}
+
+#[tauri::command]
+pub async fn proxy_http_request(request: ProxyHttpRequest) -> Result<ProxyHttpResponse, String> {
+    let method = request.method.unwrap_or_else(|| "GET".to_string());
+    let target = resolve_proxy_target(&request.url, &method)?;
+    let reqwest_method = Method::from_bytes(method.as_bytes())
+        .map_err(|e| format!("Unsupported HTTP method {}: {}", method, e))?;
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP proxy client: {}", e))?;
+
+    let mut outbound_headers = HeaderMap::new();
+    if let Some(headers) = request.headers {
+        for (name, value) in headers {
+            let header_name = match HeaderName::from_bytes(name.as_bytes()) {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+
+            if matches!(
+                header_name.as_str(),
+                "host" | "origin" | "referer" | "content-length"
+            ) {
+                continue;
+            }
+
+            let header_value = match HeaderValue::from_str(&value) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            outbound_headers.insert(header_name, header_value);
+        }
+    }
+
+    debug!("Proxying {} {}", reqwest_method, target);
+
+    let mut builder = client
+        .request(reqwest_method.clone(), target.clone())
+        .headers(outbound_headers);
+
+    if !matches!(reqwest_method, Method::GET | Method::HEAD) {
+        if let Some(body) = request.body {
+            builder = builder.body(body);
+        }
+    }
+
+    let response = builder.send().await.map_err(|e| {
+        warn!("Proxy request failed for {} {}: {}", reqwest_method, target, e);
+        format!("Proxy request failed: {}", e)
+    })?;
+
+    let status = response.status();
+    let response_url = response.url().to_string();
+    let response_header_map = response.headers().clone();
+    let body = if reqwest_method == Method::HEAD {
+        String::new()
+    } else {
+        response.text().await.map_err(|e| {
+            warn!("Failed reading proxy response body from {}: {}", target, e);
+            format!("Failed to read proxy response body: {}", e)
+        })?
+    };
+
+    let mut headers = HashMap::new();
+    for (name, value) in response_header_map.iter() {
+        if let Ok(value) = value.to_str() {
+            headers.insert(name.to_string(), value.to_string());
+        }
+    }
+
+    Ok(ProxyHttpResponse {
+        url: response_url,
+        status: status.as_u16(),
+        status_text: status.canonical_reason().unwrap_or("").to_string(),
+        headers,
+        body,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -409,4 +562,44 @@ pub async fn install_update(
 pub async fn restart_app(app: AppHandle) -> Result<(), String> {
     info!("Restarting application...");
     app.restart();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_relative_pac_api_paths() {
+        let target = resolve_proxy_target("/profile?t=1", "GET").unwrap();
+        assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/profile?t=1");
+    }
+
+    #[test]
+    fn allows_official_status_probe() {
+        let target = resolve_proxy_target("https://pokemon-auto-chess.com/status", "GET").unwrap();
+        assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/status");
+    }
+
+    #[test]
+    fn denies_non_allowlisted_relative_paths() {
+        assert!(resolve_proxy_target("/assets/ui/favicon.ico", "GET").is_err());
+    }
+
+    #[test]
+    fn denies_non_https_targets() {
+        assert!(resolve_proxy_target("http://pokemon-auto-chess.com/profile", "GET").is_err());
+    }
+
+    #[test]
+    fn allows_community_server_manifest_download() {
+        let target = resolve_proxy_target(
+            "https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md",
+            "GET",
+        )
+        .unwrap();
+        assert_eq!(
+            target.as_str(),
+            "https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md"
+        );
+    }
 }

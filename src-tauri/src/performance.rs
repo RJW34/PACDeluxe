@@ -21,8 +21,8 @@ use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use wmi::{COMLibrary, WMIConnection};
 
-/// Performance statistics from native code
-/// Note: FPS is measured in JavaScript (frame-monitor.js), not here
+/// Performance statistics from native code.
+/// FPS is measured by the injected PACDeluxe runtime in main.rs, not here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceStats {
     pub cpu_usage: f32,

@@ -138,7 +138,8 @@ fn cleanup_old_installation() {
 /// Counter for unique popup window labels
 static POPUP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// Performance overlay script injected into the game page
+/// Performance runtime injected into the game page.
+/// This is the canonical frontend runtime for PACDeluxe.
 const OVERLAY_SCRIPT: &str = r#"
 (function() {
     // Wait for body to exist
@@ -216,38 +217,112 @@ const OVERLAY_SCRIPT: &str = r#"
         });
         console.log('[PACDeluxe] Canvas context menu disabled');
 
-        // === API URL REWRITE FOR LOCAL SERVING ===
-        // When the app is served from local files (tauri:// protocol),
-        // relative HTTP requests like /profile, /bots, /leaderboards, /tilemap/*
-        // resolve against the local origin and 404. This layer rewrites them
-        // to the production server. Must run BEFORE the asset cache intercept.
+        // === NATIVE HTTP PROXY FOR LOCAL SERVING ===
+        // The locally served client runs on the Tauri origin, so browser fetches
+        // to upstream relative API paths must go through a native allowlisted
+        // proxy instead of disabling browser security globally.
         (function() {
             const PROD_ORIGIN = 'https://pokemon-auto-chess.com';
-            // API paths that must hit the production server
+            const COMMUNITY_SERVERS_URL = 'https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md';
+            const invoke = window.__TAURI__?.core?.invoke;
             const apiPrefixes = [
                 '/profile', '/bots', '/leaderboards', '/tilemap/',
                 '/game-history/', '/chat-history/'
             ];
 
-            function isApiPath(url) {
-                if (typeof url !== 'string') return false;
-                for (const prefix of apiPrefixes) {
-                    if (url.startsWith(prefix)) return true;
+            function isApiPath(pathname) {
+                return apiPrefixes.some((prefix) => pathname.startsWith(prefix));
+            }
+
+            function normalizeProxyUrl(url) {
+                try {
+                    const parsed = new URL(url, window.location.origin);
+                    if (parsed.origin === window.location.origin) {
+                        return parsed.pathname + parsed.search;
+                    }
+                    return parsed.toString();
+                } catch (_error) {
+                    return url;
                 }
-                return false;
+            }
+
+            function isProxyableUrl(url, method) {
+                if (typeof url !== 'string') return false;
+
+                if (url.startsWith('/')) {
+                    return isApiPath(url);
+                }
+
+                if (url === COMMUNITY_SERVERS_URL) {
+                    return method === 'GET' || method === 'HEAD';
+                }
+
+                if (!url.startsWith(PROD_ORIGIN)) {
+                    return false;
+                }
+
+                try {
+                    const parsed = new URL(url);
+                    return isApiPath(parsed.pathname) || ((method === 'GET' || method === 'HEAD') && parsed.pathname === '/status');
+                } catch (_error) {
+                    return false;
+                }
+            }
+
+            async function proxyFetch(request) {
+                const method = (request.method || 'GET').toUpperCase();
+                const url = normalizeProxyUrl(request.url);
+                const headers = {};
+                request.headers.forEach((value, key) => {
+                    headers[key] = value;
+                });
+
+                let body = null;
+                if (method !== 'GET' && method !== 'HEAD') {
+                    try {
+                        body = await request.clone().text();
+                    } catch (_error) {
+                        body = null;
+                    }
+                }
+
+                const proxied = await invoke('proxy_http_request', {
+                    request: { url, method, headers, body }
+                });
+
+                const response = new Response(proxied.body, {
+                    status: proxied.status,
+                    statusText: proxied.statusText,
+                    headers: proxied.headers
+                });
+
+                try {
+                    Object.defineProperty(response, 'url', { value: proxied.url });
+                } catch (_error) {}
+
+                return response;
             }
 
             const nativeFetch = window.fetch.bind(window);
-            window.fetch = function(input, init) {
-                if (typeof input === 'string' && isApiPath(input)) {
-                    input = PROD_ORIGIN + input;
-                } else if (input instanceof Request && isApiPath(new URL(input.url).pathname)) {
-                    input = new Request(PROD_ORIGIN + new URL(input.url).pathname + new URL(input.url).search, input);
+            window.fetch = async function(input, init) {
+                const request = input instanceof Request
+                    ? new Request(input, init)
+                    : new Request(input, init);
+                const method = (request.method || 'GET').toUpperCase();
+                const url = normalizeProxyUrl(request.url);
+
+                if (!invoke || !isProxyableUrl(url, method)) {
+                    return nativeFetch(input, init);
                 }
-                return nativeFetch(input, init);
+
+                if (request.signal?.aborted) {
+                    throw request.signal.reason || new DOMException('The operation was aborted.', 'AbortError');
+                }
+
+                return proxyFetch(request);
             };
 
-            console.log('[PACDeluxe] API URL rewrite active for local serving');
+            console.log('[PACDeluxe] Native upstream proxy active for local serving');
         })();
 
         // === ASSET CACHE WITH VERSION CHECK ===
@@ -960,7 +1035,7 @@ fn main() {
         unsafe {
             std::env::set_var(
                 "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-                "--enable-gpu-rasterization --enable-zero-copy --disable-background-timer-throttling --disable-renderer-backgrounding --disable-web-security",
+                "--enable-gpu-rasterization --enable-zero-copy --disable-background-timer-throttling --disable-renderer-backgrounding",
             );
         }
     }
@@ -1160,6 +1235,7 @@ fn main() {
             commands::get_hdr_status,
             commands::set_window_mode,
             commands::get_window_mode,
+            commands::proxy_http_request,
             commands::check_for_updates,
             commands::install_update,
             commands::restart_app,

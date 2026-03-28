@@ -1,162 +1,76 @@
 # Ethics and Compliance Statement
 
-## Pokemon Auto Chess Deluxe - Fair Play Commitment
+## PACDeluxe Fair-Play Commitments
 
-This document states the ethical constraints and fair play guarantees of the PACDeluxe native client.
+PACDeluxe is allowed to improve delivery, performance visibility, and non-competitive UI convenience. It is not allowed to change competitive gameplay behavior.
 
----
+## Non-Negotiable Constraints
 
-## Core Principles
+- No hidden-state access
+- No opponent-only information exposure
+- No RNG manipulation
+- No timing-rule manipulation
+- No gameplay automation
+- No packet forgery or network-message tampering
+- No bypass of server-authoritative gameplay checks
 
-### 1. No Hidden State Access
+All gameplay logic remains server-authoritative.
 
-This client does not access, reveal, or exploit any hidden game state:
+## Allowed Scope
 
-- No opponent information exposed
-- No future events predicted
-- No hidden server-side data read
+PACDeluxe may implement:
 
-### 2. Server Authority
+- local asset delivery
+- system-performance tuning
+- performance telemetry
+- window-management features
+- updater UX
+- non-competitive booster/profile convenience
+- auth/session recovery behavior
 
-All game logic remains **server-authoritative**:
+These features must not reveal hidden game information or automate gameplay decisions.
 
-- Game state is determined by the server
-- RNG is server-controlled
-- Matchmaking is unchanged
-- Timing is server-synchronized
+## Validation Scope
 
-### 3. No Automated Decision-Making
+Current verification consists of:
 
-No gameplay decisions are made by the client:
+1. ethical safeguard tests over PACDeluxe-owned source
+2. build-manifest verification
+3. validation harness scanning PACDeluxe-owned runtime/build code
+4. optional replay comparison when replay fixtures exist
 
-- No auto-play or auto-battle
-- No AI-assisted gameplay
-- No macro support for game actions
-- No input automation
+Important limitation:
 
-### 4. Information Display
+Replay comparison is not currently complete unless files are present under `validation/replays/`.
 
-Users see the same **game information** as browser users. The performance overlay displays system-level telemetry (FPS, CPU, GPU, memory, refresh rate, RTT, HDR status) that is not derived from game state and does not reveal any hidden gameplay information.
+## Build-Time Patch Policy
 
-### 5. Non-Competitive QoL Features
+All upstream patches must be:
 
-PACDeluxe includes a small set of quality-of-life features (booster "Flip All", "Equip" shortcut, session recovery) that provide convenience but do not affect competitive outcomes. These features interact only with client-side UI elements and do not access server-authoritative state.
+- non-gameplay
+- idempotent
+- documented in `docs/PATCH_MANIFEST.md`
+- implemented in `scripts/build-frontend.js`
 
----
+Undocumented upstream patches are not allowed.
 
-## Explicitly Forbidden Functionality
+## Network Policy
 
-The following are **never implemented** in this client:
+PACDeluxe may proxy a limited allowlist of upstream HTTP endpoints needed for the local-build client to function.
 
-### Game State Manipulation
-- Reading hidden game state
-- Modifying game variables
-- Accessing opponent data
-- Revealing hidden information
+That proxy must remain:
 
-### RNG/Timing Manipulation
-- Predicting random outcomes
-- Manipulating random seeds
-- Altering timing calculations
-- Exploiting race conditions
-
-### Automation
-- Automated decision-making
-- AI-assisted gameplay
-- Macro support for game actions
-- Input automation
-
-### Network Manipulation
-- Intercepting game traffic
-- Modifying network messages
-- Replaying or forging packets
-- Man-in-the-middle attacks
-
----
-
-## Implemented Safeguards
-
-### Source Code Scanning
-
-Automated tests scan source files in `src/` and `src-tauri/src/` for forbidden patterns:
-
-```javascript
-// Forbidden patterns checked by tests/ethical-safeguards.test.js
-- opponent.*private
-- hidden.*state
-- modify.*rng
-- automate.*decision
-- bypass.*server
-- intercept.*network
-```
-
-**Scan scope:** `src/`, `src-tauri/src/`. Excluded directories: `scripts/`, `docs/`, `tests/`, `dist/`, `upstream-game/`, `node_modules/`, `target/`.
-
-### Determinism Validation
-
-The validation harness (`npm run validate`) performs:
-
-1. Static source scanning for forbidden patterns (required)
-2. Replay-based state comparison when replay artifacts are present (optional)
-
-Replay comparison runs only when `validation/replays/` contains matching native and browser replay files. When present, state hashes are compared tick-by-tick and any divergence blocks deployment.
-
-### Build-Time Patches
-
-All modifications to upstream source code are:
-
-- Applied at build time by `scripts/build-frontend.js`
-- Idempotent (safe to re-apply)
-- Documented in `TRANSPARENCY.md`
-- Limited to: initial resize fix, booster Equip button, server URL hardcode
-- None modify game logic, RNG, matchmaking, or server-authoritative behavior
-
-### Code Review Requirements
-
-All changes must:
-
-1. Pass automated ethical safeguard tests
-2. Document any DOM interactions
-3. Justify any network-adjacent code
-4. Receive maintainer approval
-
----
+- allowlisted
+- documented
+- non-gameplay
+- incapable of modifying competitive state or server-authoritative outcomes
 
 ## Transparency
 
-### Open Source
+See:
 
-All source code is publicly available for inspection. Anyone can verify that no cheating functionality exists.
+- `TRANSPARENCY.md`
+- `docs/PATCH_MANIFEST.md`
+- `docs/ADR-0001-local-build-architecture.md`
 
-### Logging
-
-The client logs all performance optimizations applied. Users can verify activity via browser/Tauri developer tools.
-
-### Reproducibility
-
-Anyone can build the client from source and compare it to official releases.
-
----
-
-## Contact
-
-If you discover any functionality that appears to violate these principles, please report it immediately:
-
-1. Open a GitHub issue
-2. Contact the upstream Pokemon Auto Chess team
-
----
-
-## Acknowledgments
-
-This client respects the work of:
-
-- The Pokemon Auto Chess development team
-- The open-source gaming community
-- Players who expect fair competition
-
----
-
-*Last Updated: 2026-03*
-
-*This document is legally non-binding but represents our firm commitment to fair play.*
+Last updated: 2026-03-27
