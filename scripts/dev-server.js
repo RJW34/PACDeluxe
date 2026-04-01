@@ -10,6 +10,7 @@ import { createServer } from 'http';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, extname, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { PROXY_API_PATHS } from './proxy-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -96,9 +97,7 @@ const server = createServer((req, res) => {
 
   // API paths that the game fetches from the server. In Tauri dev mode these
   // are handled by the native allowlisted HTTP proxy instead of the dev server.
-  const apiPrefixes = ['/profile', '/bots', '/leaderboards', '/tilemap/',
-    '/game-history/', '/chat-history/'];
-  if (apiPrefixes.some(p => pathname.startsWith(p))) {
+  if (PROXY_API_PATHS.some((prefix) => pathname.startsWith(prefix))) {
     res.writeHead(501, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       error: 'PACDeluxe native proxy required',

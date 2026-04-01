@@ -51,11 +51,13 @@ impl WindowMode {
 const PROD_ORIGIN: &str = "https://pokemon-auto-chess.com";
 const PROXY_API_PATHS: &[&str] = &[
     "/profile",
+    "/players",
     "/bots",
     "/leaderboards",
     "/tilemap/",
     "/game-history/",
     "/chat-history/",
+    "/moderation/",
 ];
 const COMMUNITY_SERVERS_MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md";
@@ -572,6 +574,21 @@ mod tests {
     fn allows_relative_pac_api_paths() {
         let target = resolve_proxy_target("/profile?t=1", "GET").unwrap();
         assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/profile?t=1");
+    }
+
+    #[test]
+    fn allows_player_search_paths() {
+        let target = resolve_proxy_target("/players?name=test", "GET").unwrap();
+        assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/players?name=test");
+    }
+
+    #[test]
+    fn allows_moderation_paths() {
+        let target = resolve_proxy_target("/moderation/rename-account", "POST").unwrap();
+        assert_eq!(
+            target.as_str(),
+            "https://pokemon-auto-chess.com/moderation/rename-account"
+        );
     }
 
     #[test]

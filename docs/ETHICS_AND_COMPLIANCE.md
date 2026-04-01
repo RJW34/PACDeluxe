@@ -61,7 +61,7 @@ PACDeluxe may proxy a limited allowlist of upstream HTTP endpoints needed for th
 That proxy must remain:
 
 - allowlisted
-- documented
+- documented in `scripts/proxy-manifest.js`
 - non-gameplay
 - incapable of modifying competitive state or server-authoritative outcomes
 
@@ -73,4 +73,4 @@ See:
 - `docs/PATCH_MANIFEST.md`
 - `docs/ADR-0001-local-build-architecture.md`
 
-Last updated: 2026-03-27
+Last updated: 2026-04-01

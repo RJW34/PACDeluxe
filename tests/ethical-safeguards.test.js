@@ -16,6 +16,7 @@ import assert from 'node:assert';
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { LOCAL_STATIC_FETCH_PREFIXES, PROXY_API_PATHS } from '../scripts/proxy-manifest.js';
 import { verifyBuildManifest } from '../scripts/verify-build-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -90,6 +91,85 @@ function findForbiddenPatterns(content, patterns) {
   }
 
   return violations;
+}
+
+function extractQuotedStrings(block) {
+  return Array.from(block.matchAll(/['"]([^'"]+)['"]/g), (match) => match[1]);
+}
+
+function extractJsArrayLiteral(content, variableName) {
+  const escapedVariableName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = content.match(new RegExp(`const\\s+${escapedVariableName}\\s*=\\s*\\[([\\s\\S]*?)\\];`));
+  assert.ok(match, `Unable to find JavaScript array literal for ${variableName}`);
+  return extractQuotedStrings(match[1]);
+}
+
+function extractRustStringSlice(content, constantName) {
+  const escapedConstantName = constantName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = content.match(new RegExp(`const\\s+${escapedConstantName}:\\s*&\\[&str\\]\\s*=\\s*&\\[([\\s\\S]*?)\\];`));
+  assert.ok(match, `Unable to find Rust string slice for ${constantName}`);
+  return extractQuotedStrings(match[1]);
+}
+
+function getSourceFilesRecursive(dir, extensions) {
+  const files = [];
+
+  try {
+    for (const entry of readdirSync(dir)) {
+      const fullPath = join(dir, entry);
+      const stat = statSync(fullPath);
+      if (stat.isDirectory()) {
+        files.push(...getSourceFilesRecursive(fullPath, extensions));
+      } else if (extensions.some((ext) => entry.endsWith(ext))) {
+        files.push(fullPath);
+      }
+    }
+  } catch {
+    // Directory does not exist or cannot be read.
+  }
+
+  return files;
+}
+
+function normalizeRelativeFetchPath(path) {
+  const cleanPath = path.split('?')[0];
+
+  if (LOCAL_STATIC_FETCH_PREFIXES.some((prefix) => cleanPath.startsWith(prefix))) {
+    return null;
+  }
+
+  if (cleanPath.startsWith('/profile')) return '/profile';
+  if (cleanPath.startsWith('/players')) return '/players';
+  if (cleanPath.startsWith('/bots')) return '/bots';
+  if (cleanPath.startsWith('/leaderboards')) return '/leaderboards';
+  if (cleanPath.startsWith('/tilemap/')) return '/tilemap/';
+  if (cleanPath.startsWith('/game-history/')) return '/game-history/';
+  if (cleanPath.startsWith('/chat-history/')) return '/chat-history/';
+  if (cleanPath.startsWith('/moderation/')) return '/moderation/';
+
+  return `UNKNOWN:${cleanPath}`;
+}
+
+function getUpstreamRelativeFetchPrefixes() {
+  const upstreamSrcDir = join(ROOT, 'upstream-game', 'app', 'public', 'src');
+  if (!existsSync(upstreamSrcDir)) {
+    return null;
+  }
+
+  const relativeFetchPaths = new Set();
+  const fetchPathPattern = /fetch\(\s*([`'"])(\/[\s\S]*?)\1/g;
+  const files = getSourceFilesRecursive(upstreamSrcDir, ['.js', '.ts', '.tsx']);
+
+  for (const file of files) {
+    const content = readFileSync(file, 'utf-8');
+    for (const match of content.matchAll(fetchPathPattern)) {
+      relativeFetchPaths.add(match[2]);
+    }
+  }
+
+  return Array.from(relativeFetchPaths, normalizeRelativeFetchPath)
+    .filter(Boolean)
+    .sort();
 }
 
 describe('Ethical Safeguards', () => {
@@ -430,6 +510,58 @@ describe('Architecture Guardrails', () => {
       buildScript.includes('https://pokemon-auto-chess.com/${scriptMatch[1]}'),
       false,
       'Builds must not parse the production bundle for config'
+    );
+  });
+
+  it('should keep proxy allowlists in sync across the runtime and dev tooling', () => {
+    const commandsRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'commands.rs'), 'utf-8');
+    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+    const devServer = readFileSync(join(ROOT, 'scripts', 'dev-server.js'), 'utf-8');
+
+    const rustAllowlist = extractRustStringSlice(commandsRs, 'PROXY_API_PATHS');
+    const runtimeAllowlist = extractJsArrayLiteral(mainRs, 'apiPrefixes');
+
+    assert.deepStrictEqual(
+      rustAllowlist,
+      PROXY_API_PATHS,
+      'Rust proxy allowlist drifted from scripts/proxy-manifest.js'
+    );
+    assert.deepStrictEqual(
+      runtimeAllowlist,
+      PROXY_API_PATHS,
+      'Injected runtime proxy allowlist drifted from scripts/proxy-manifest.js'
+    );
+    assert.ok(
+      devServer.includes("import { PROXY_API_PATHS } from './proxy-manifest.js';"),
+      'Dev server must import the shared proxy manifest'
+    );
+    assert.ok(
+      devServer.includes('PROXY_API_PATHS.some((prefix) => pathname.startsWith(prefix))'),
+      'Dev server must use the shared proxy allowlist'
+    );
+  });
+
+  it('should cover synced upstream relative API fetches with the proxy allowlist', () => {
+    const normalizedFetchPrefixes = getUpstreamRelativeFetchPrefixes();
+    if (normalizedFetchPrefixes === null) {
+      console.log('Note: upstream-game not found, skipping proxy coverage check');
+      return;
+    }
+
+    const unknownPaths = normalizedFetchPrefixes.filter((path) => path.startsWith('UNKNOWN:'));
+    assert.deepStrictEqual(
+      unknownPaths,
+      [],
+      `Found new upstream relative fetch paths that need classification:\n${unknownPaths.join('\n')}`
+    );
+
+    const missingAllowlistEntries = normalizedFetchPrefixes.filter(
+      (path) => !PROXY_API_PATHS.includes(path)
+    );
+    assert.deepStrictEqual(
+      missingAllowlistEntries,
+      [],
+      `Upstream relative API fetches are missing from the proxy allowlist:\n${missingAllowlistEntries.join('\n')}`
     );
   });
 });

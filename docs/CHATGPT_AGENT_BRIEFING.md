@@ -36,6 +36,7 @@ PACDeluxe must not:
 | `src-tauri/src/commands.rs` | Tauri commands, updater flow, allowlisted HTTP proxy |
 | `src-tauri/src/performance.rs` | System tuning and telemetry |
 | `scripts/build-manifest.js` | Canonical patch and config inventory |
+| `scripts/proxy-manifest.js` | Canonical upstream HTTP proxy allowlist |
 | `scripts/build-frontend.js` | Upstream patching and frontend bundling |
 | `scripts/verify-build-manifest.js` | Patch/doc drift detection |
 | `docs/PATCH_MANIFEST.md` | Canonical upstream patch inventory |

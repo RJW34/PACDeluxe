@@ -225,9 +225,11 @@ const OVERLAY_SCRIPT: &str = r#"
             const PROD_ORIGIN = 'https://pokemon-auto-chess.com';
             const COMMUNITY_SERVERS_URL = 'https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md';
             const invoke = window.__TAURI__?.core?.invoke;
+            // Keep this list in sync with scripts/proxy-manifest.js and
+            // src-tauri/src/commands.rs.
             const apiPrefixes = [
-                '/profile', '/bots', '/leaderboards', '/tilemap/',
-                '/game-history/', '/chat-history/'
+                '/profile', '/players', '/bots', '/leaderboards', '/tilemap/',
+                '/game-history/', '/chat-history/', '/moderation/'
             ];
 
             function isApiPath(pathname) {
@@ -421,7 +423,7 @@ const OVERLAY_SCRIPT: &str = r#"
             console.log('[PACDeluxe] Asset cache initialized (v' + currentVersion + ')');
         })();
 
-        // === MINIMAL STYLING (performance optimizations removed for 6.8.0 compatibility) ===
+        // === MINIMAL STYLING (kept intentionally small for upstream compatibility) ===
         const perfStyles = document.createElement('style');
         perfStyles.id = 'pac-perf-styles';
         perfStyles.textContent = `
