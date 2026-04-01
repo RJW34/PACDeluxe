@@ -22,11 +22,10 @@
     "test": "node --test tests/ethical-safeguards.test.js",
     "lint": "biome lint scripts tests"
   },
-  "dependencies": {},
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
-    "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/cli": "^2.10.1",
     "esbuild": "^0.24.0"
   },
   "engines": {
