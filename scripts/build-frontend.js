@@ -38,6 +38,26 @@ const BOOSTER_COMPONENT_FILE = join(
   'booster',
   'booster.tsx'
 );
+const BOOSTER_CARD_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'pages',
+  'component',
+  'booster',
+  'booster-card.tsx'
+);
+const BOOSTER_CARD_CSS_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'pages',
+  'component',
+  'booster',
+  'booster-card.css'
+);
 const NETWORK_FILE = join(
   UPSTREAM_DIR,
   'app',
@@ -201,7 +221,7 @@ function applyUpstreamPatches() {
   let boosterContent = readFileSync(BOOSTER_COMPONENT_FILE, 'utf-8')
     .replace(/\r\n/g, '\n');
 
-  if (!boosterContent.includes('function onClickEquip()')) {
+  if (!boosterContent.includes('function onClickEquipCard(')) {
     if (!boosterContent.includes('import { PkmIndex } from "../../../../../types/enum/Pokemon"\n')) {
       boosterContent = replaceOrThrow(
         boosterContent,
@@ -233,27 +253,16 @@ function applyUpstreamPatches() {
       }
     }
 
-    if (!boosterContent.includes('const equipableCard = boosterContent.find(')) {
-      boosterContent = replaceOrThrow(
-        boosterContent,
-        '  const [loading, setLoading] = useState(false)\n',
-        '  const [loading, setLoading] = useState(false)\n' +
-          '  const equipableCard = boosterContent.find((card) => card.new)\n',
-        'booster equipable card state'
-      );
-    }
-
+    // Add per-card equip handler (replaces the old single-button approach)
     boosterContent = replaceOrThrow(
       boosterContent,
       '  const handleFlip = (index: number) => {\n',
-      '  function onClickEquip() {\n' +
-        '    if (!equipableCard) return\n' +
-        '\n' +
+      '  function onClickEquipCard(card: (typeof boosterContent)[0]) {\n' +
         '    dispatch(\n' +
         '      changeAvatar({\n' +
-        '        index: PkmIndex[equipableCard.name],\n' +
-        '        emotion: equipableCard.emotion,\n' +
-        '        shiny: equipableCard.shiny\n' +
+        '        index: PkmIndex[card.name],\n' +
+        '        emotion: card.emotion,\n' +
+        '        shiny: card.shiny\n' +
         '      })\n' +
         '    )\n' +
         '  }\n' +
@@ -262,20 +271,92 @@ function applyUpstreamPatches() {
       'booster equip click handler'
     );
 
+    // Pass onEquip callback to each new card
     boosterContent = replaceOrThrow(
       boosterContent,
-      '        <span className="booster-count">{numberOfBooster}</span>\n',
-      '        {equipableCard && (\n' +
-        '          <button className="bubbly orange" onClick={onClickEquip} style={{ fontSize: "0.85em" }}>\n' +
-        '            Equip\n' +
-        '          </button>\n' +
-        '        )}\n' +
-        '        <span className="booster-count">{numberOfBooster}</span>\n',
-      'booster equip button'
+      '            onFlip={() => handleFlip(i)}\n' +
+        '          />\n',
+      '            onFlip={() => handleFlip(i)}\n' +
+        '            onEquip={card.new ? () => onClickEquipCard(card) : undefined}\n' +
+        '          />\n',
+      'booster per-card equip prop'
     );
 
     writeFileSync(BOOSTER_COMPONENT_FILE, boosterContent);
     log(`Applied upstream patch: ${getPatchMeta('booster-equip-button').id}`);
+  }
+
+  // === PATCH 2b: Add equip button to individual booster cards ===
+  if (existsSync(BOOSTER_CARD_FILE)) {
+    let cardContent = readFileSync(BOOSTER_CARD_FILE, 'utf-8')
+      .replace(/\r\n/g, '\n');
+
+    if (!cardContent.includes('onEquip')) {
+      // Add onEquip to props interface
+      cardContent = replaceOrThrow(
+        cardContent,
+        '  onFlip: () => void\n}\n',
+        '  onFlip: () => void\n  onEquip?: () => void\n}\n',
+        'booster card equip prop interface'
+      );
+
+      // Destructure onEquip in component
+      cardContent = replaceOrThrow(
+        cardContent,
+        '{ card, flipped, onFlip }',
+        '{ card, flipped, onFlip, onEquip }',
+        'booster card equip destructure'
+      );
+
+      // Add equip button below NEW text on flipped cards
+      cardContent = replaceOrThrow(
+        cardContent,
+        '            <p className="new">{t("new")}</p>\n' +
+          '          ) : (\n',
+        '            <>\n' +
+          '              <p className="new">{t("new")}</p>\n' +
+          '              {flipped && onEquip && (\n' +
+          '                <button\n' +
+          '                  className="bubbly orange booster-equip-btn"\n' +
+          '                  onClick={(e) => { e.stopPropagation(); onEquip(); }}\n' +
+          '                >\n' +
+          '                  Equip\n' +
+          '                </button>\n' +
+          '              )}\n' +
+          '            </>\n' +
+          '          ) : (\n',
+        'booster card equip button jsx'
+      );
+
+      writeFileSync(BOOSTER_CARD_FILE, cardContent);
+      log('Applied upstream patch: booster-card-equip-button');
+    }
+  }
+
+  // === PATCH 2c: Add equip button CSS to booster cards ===
+  if (existsSync(BOOSTER_CARD_CSS_FILE)) {
+    let cardCss = readFileSync(BOOSTER_CARD_CSS_FILE, 'utf-8')
+      .replace(/\r\n/g, '\n');
+
+    if (!cardCss.includes('.booster-equip-btn')) {
+      cardCss = replaceOrThrow(
+        cardCss,
+        '.booster-card .new {\n',
+        '.booster-equip-btn {\n' +
+          '  font-size: 0.65em !important;\n' +
+          '  padding: 1px 10px !important;\n' +
+          '  margin: 2px auto 0 !important;\n' +
+          '  display: block !important;\n' +
+          '  cursor: var(--cursor-hover);\n' +
+          '}\n' +
+          '\n' +
+          '.booster-card .new {\n',
+        'booster card equip button css'
+      );
+
+      writeFileSync(BOOSTER_CARD_CSS_FILE, cardCss);
+      log('Applied upstream patch: booster-card-equip-css');
+    }
   }
 
   // === PATCH 3: Hardcode Colyseus server URL for local-build architecture ===

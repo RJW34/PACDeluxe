@@ -138,6 +138,44 @@ fn cleanup_old_installation() {
 /// Counter for unique popup window labels
 static POPUP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// Script injected into auth popup windows to bridge Firebase's postMessage
+/// back to the main window via Tauri events.
+///
+/// Problem: Tauri's `on_new_window` creates independent WebviewWindows with no
+/// `window.opener`, which breaks Firebase's popup auth flow (it relies on
+/// `window.opener.postMessage()` to return the OAuth result to the main window).
+///
+/// Solution: Mock `window.opener` before any page JS runs. The mock's
+/// `postMessage` forwards messages via Tauri's event system. The main window's
+/// OVERLAY_SCRIPT listens for these events and re-dispatches them as native
+/// `MessageEvent`s so the Firebase SDK completes `signInWithPopup()` normally.
+const AUTH_POPUP_BRIDGE_SCRIPT: &str = r#"
+(function() {
+    if (!window.opener) {
+        window.opener = {
+            postMessage: function(data, targetOrigin) {
+                try {
+                    if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
+                        window.__TAURI__.event.emit('pac-auth-popup-result', {
+                            data: data,
+                            origin: window.location.origin
+                        });
+                        console.log('[PACDeluxe Auth Bridge] Forwarded postMessage via Tauri event');
+                    } else {
+                        console.warn('[PACDeluxe Auth Bridge] Tauri event API not available');
+                    }
+                } catch(e) {
+                    console.error('[PACDeluxe Auth Bridge] Failed to emit:', e);
+                }
+            },
+            closed: false,
+            location: { href: '' }
+        };
+        console.log('[PACDeluxe Auth Bridge] window.opener mock installed');
+    }
+})();
+"#;
+
 /// Performance runtime injected into the game page.
 /// This is the canonical frontend runtime for PACDeluxe.
 const OVERLAY_SCRIPT: &str = r#"
@@ -325,6 +363,27 @@ const OVERLAY_SCRIPT: &str = r#"
             };
 
             console.log('[PACDeluxe] Native upstream proxy active for local serving');
+        })();
+
+        // === AUTH POPUP BRIDGE LISTENER ===
+        // Receives Firebase auth results forwarded from popup windows via Tauri
+        // events and re-dispatches them as native MessageEvents so the Firebase
+        // SDK completes signInWithPopup() normally.
+        (function() {
+            const listen = window.__TAURI__?.event?.listen;
+            if (listen) {
+                listen('pac-auth-popup-result', function(event) {
+                    console.log('[PACDeluxe] Received auth result from popup bridge');
+                    var payload = event.payload;
+                    if (payload && payload.data !== undefined) {
+                        window.dispatchEvent(new MessageEvent('message', {
+                            data: payload.data,
+                            origin: payload.origin || ''
+                        }));
+                    }
+                });
+                console.log('[PACDeluxe] Auth popup bridge listener active');
+            }
         })();
 
         // === ASSET CACHE WITH VERSION CHECK ===
@@ -1119,6 +1178,9 @@ fn main() {
                 .center()
                 .focused(true)
                 .always_on_top(true)
+                // Mock window.opener so Firebase's popup auth can bridge results
+                // back to the main window via Tauri events
+                .initialization_script(AUTH_POPUP_BRIDGE_SCRIPT)
                 // Detect auth completion via navigation events (fires before page load)
                 .on_navigation(move |nav_url| {
                     let url_str = nav_url.to_string();
@@ -1146,8 +1208,10 @@ fn main() {
                             let app = app_for_nav.clone();
                             let label = label_for_nav.clone();
                             std::thread::spawn(move || {
-                                // Short delay to let the auth flow complete
-                                std::thread::sleep(Duration::from_millis(300));
+                                // Wait for Firebase handler page to load, process
+                                // the OAuth code, and call postMessage (our mock
+                                // bridges it to the main window via Tauri events)
+                                std::thread::sleep(Duration::from_millis(3000));
                                 if let Some(win) = app.get_webview_window(&label) {
                                     match win.close() {
                                         Ok(_) => debug!("Auth popup {} closed successfully", label),
