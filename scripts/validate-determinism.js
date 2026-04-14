@@ -355,7 +355,7 @@ async function main() {
     console.log('  - Source code scan: PASSED');
     console.log('  - Replay comparison: SKIPPED (no replay files)');
     console.log('');
-    console.log('This client bundles the upstream game and uses a native allowlisted upstream proxy.');
+    console.log('This client bundles the upstream game and uses a native origin-scoped upstream proxy.');
     console.log('No gameplay-affecting modifications were detected in the scanned code.');
     console.log('Replay comparison still needs fixtures before validation can be considered complete.');
   } else {

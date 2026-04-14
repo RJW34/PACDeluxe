@@ -56,12 +56,12 @@ Undocumented upstream patches are not allowed.
 
 ## Network Policy
 
-PACDeluxe may proxy a limited allowlist of upstream HTTP endpoints needed for the local-build client to function.
+PACDeluxe proxies upstream HTTP requests to the production origin so the local-build client behaves the same way it would at `https://pokemon-auto-chess.com`.
 
-That proxy must remain:
+The proxy must remain:
 
-- allowlisted
-- documented in `scripts/proxy-manifest.js`
+- origin-scoped (only `pokemon-auto-chess.com` and a single read-only community-server manifest URL are accepted)
+- documented in `scripts/proxy-manifest.js` and `src-tauri/src/commands.rs`
 - non-gameplay
 - incapable of modifying competitive state or server-authoritative outcomes
 
@@ -73,4 +73,4 @@ See:
 - `docs/PATCH_MANIFEST.md`
 - `docs/ADR-0001-local-build-architecture.md`
 
-Last updated: 2026-04-01
+Last updated: 2026-04-13

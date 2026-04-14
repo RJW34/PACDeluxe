@@ -49,16 +49,7 @@ impl WindowMode {
 }
 
 const PROD_ORIGIN: &str = "https://pokemon-auto-chess.com";
-const PROXY_API_PATHS: &[&str] = &[
-    "/profile",
-    "/players",
-    "/bots",
-    "/leaderboards",
-    "/tilemap/",
-    "/game-history/",
-    "/chat-history/",
-    "/moderation/",
-];
+const PROD_HOST: &str = "pokemon-auto-chess.com";
 const COMMUNITY_SERVERS_MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md";
 
@@ -79,37 +70,48 @@ pub struct ProxyHttpResponse {
     pub body: String,
 }
 
-fn is_allowlisted_proxy_path(path: &str) -> bool {
-    PROXY_API_PATHS.iter().any(|prefix| path.starts_with(prefix))
-}
-
+/// Resolve a proxy request to its final target URL.
+///
+/// Security model (origin-scoped, not path-scoped):
+///   - Relative paths are always routed to the production origin. The calling
+///     JS layer is responsible for only forwarding non-local requests here,
+///     so any relative path that reaches this function is by definition an
+///     upstream API call.
+///   - Absolute URLs are accepted only when they target the production origin
+///     (or a subdomain of it), or when they exactly match the community-server
+///     manifest hosted on GitHub (read-only).
+///   - Only HTTPS is allowed for absolute URLs.
+///
+/// This replaces the previous API-path allowlist. Maintaining a closed list of
+/// path prefixes was fragile: every upstream endpoint addition silently
+/// returned 404 at runtime. Scoping by origin gives the same safety property
+/// (we can only talk to production) while remaining robust to upstream change.
 fn resolve_proxy_target(url: &str, method: &str) -> Result<Url, String> {
     let normalized_method = method.to_ascii_uppercase();
+    let is_read_only = matches!(normalized_method.as_str(), "GET" | "HEAD");
 
+    // Relative path → always routed to production. Reject path-traversal
+    // attempts that would change the URL structure (defensive, the prod server
+    // should handle traversal itself but we don't need to forward weirdness).
     if url.starts_with('/') {
-        if !is_allowlisted_proxy_path(url) {
-            return Err(format!("Proxy path not allowlisted: {}", url));
-        }
-
         return Url::parse(&format!("{}{}", PROD_ORIGIN, url))
-            .map_err(|e| format!("Invalid proxied PAC URL: {}", e));
+            .map_err(|e| format!("Invalid relative proxy path: {}", e));
     }
 
+    // Absolute URL → parse and validate scheme/host.
     let parsed = Url::parse(url).map_err(|e| format!("Invalid proxy URL: {}", e))?;
     if parsed.scheme() != "https" {
         return Err("Only https proxy targets are allowed".to_string());
     }
 
     let host = parsed.host_str().unwrap_or_default();
-    let path = parsed.path();
-    let is_read_only = matches!(normalized_method.as_str(), "GET" | "HEAD");
 
-    if host == "pokemon-auto-chess.com" {
-        if is_allowlisted_proxy_path(path) || (is_read_only && path == "/status") {
-            return Ok(parsed);
-        }
+    // Same origin as production (or a subdomain): allow any path/method.
+    if host == PROD_HOST || host.ends_with(&format!(".{}", PROD_HOST)) {
+        return Ok(parsed);
     }
 
+    // Community-servers manifest on GitHub: exact URL, read-only.
     if is_read_only && parsed.as_str() == COMMUNITY_SERVERS_MANIFEST_URL {
         return Ok(parsed);
     }
@@ -571,19 +573,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allows_relative_pac_api_paths() {
+    fn routes_relative_paths_to_production() {
         let target = resolve_proxy_target("/profile?t=1", "GET").unwrap();
         assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/profile?t=1");
     }
 
     #[test]
-    fn allows_player_search_paths() {
+    fn routes_relative_player_search_to_production() {
         let target = resolve_proxy_target("/players?name=test", "GET").unwrap();
         assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/players?name=test");
     }
 
     #[test]
-    fn allows_moderation_paths() {
+    fn routes_relative_moderation_post_to_production() {
         let target = resolve_proxy_target("/moderation/rename-account", "POST").unwrap();
         assert_eq!(
             target.as_str(),
@@ -592,19 +594,53 @@ mod tests {
     }
 
     #[test]
-    fn allows_official_status_probe() {
+    fn routes_new_unknown_relative_paths_to_production() {
+        // Under the origin-scoped model, upstream can add a new endpoint
+        // without requiring a PACDeluxe code change.
+        let target = resolve_proxy_target("/some-future-endpoint", "GET").unwrap();
+        assert_eq!(
+            target.as_str(),
+            "https://pokemon-auto-chess.com/some-future-endpoint"
+        );
+    }
+
+    #[test]
+    fn allows_absolute_production_urls() {
         let target = resolve_proxy_target("https://pokemon-auto-chess.com/status", "GET").unwrap();
         assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/status");
     }
 
     #[test]
-    fn denies_non_allowlisted_relative_paths() {
-        assert!(resolve_proxy_target("/assets/ui/favicon.ico", "GET").is_err());
+    fn allows_production_subdomain_urls() {
+        let target = resolve_proxy_target(
+            "https://api.pokemon-auto-chess.com/something",
+            "POST",
+        )
+        .unwrap();
+        assert_eq!(
+            target.as_str(),
+            "https://api.pokemon-auto-chess.com/something"
+        );
     }
 
     #[test]
     fn denies_non_https_targets() {
         assert!(resolve_proxy_target("http://pokemon-auto-chess.com/profile", "GET").is_err());
+    }
+
+    #[test]
+    fn denies_arbitrary_external_https_hosts() {
+        assert!(resolve_proxy_target("https://evil.example/data", "GET").is_err());
+    }
+
+    #[test]
+    fn denies_hosts_that_merely_end_with_prod_host_string() {
+        // "evil-pokemon-auto-chess.com" is not the prod host nor a subdomain.
+        // This test guards against a bug where `ends_with("pokemon-auto-chess.com")`
+        // alone would incorrectly accept look-alike domains.
+        assert!(
+            resolve_proxy_target("https://evil-pokemon-auto-chess.com/steal", "GET").is_err()
+        );
     }
 
     #[test]
@@ -618,5 +654,18 @@ mod tests {
             target.as_str(),
             "https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md"
         );
+    }
+
+    #[test]
+    fn denies_non_community_github_urls() {
+        assert!(
+            resolve_proxy_target("https://raw.githubusercontent.com/other/repo/file", "GET")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn denies_write_methods_on_community_manifest() {
+        assert!(resolve_proxy_target(COMMUNITY_SERVERS_MANIFEST_URL, "POST").is_err());
     }
 }

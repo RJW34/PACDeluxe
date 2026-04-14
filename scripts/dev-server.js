@@ -2,15 +2,22 @@
 /**
  * Development Server
  *
- * Serves the dist folder for Tauri development.
- * Uses native http module to avoid extra dependencies.
+ * Serves the dist/ folder for Tauri's `beforeDevCommand`. Tauri points its
+ * webview at http://localhost:1420 and the injected main.rs overlay script
+ * handles all upstream API calls via the native Rust proxy, so this server
+ * only ever needs to serve static assets and the SPA index.html fallback.
+ *
+ * Direct-browser access (without Tauri) is not supported: without the
+ * overlay, upstream fetches would hit this server instead of the native
+ * proxy and get a bogus HTML response. A 501 is returned for non-static
+ * GET requests in that case so the failure mode is at least explicit.
  */
 
 import { createServer } from 'http';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, extname, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { PROXY_API_PATHS } from './proxy-manifest.js';
+import { isLocalStaticPath } from './proxy-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -37,6 +44,22 @@ const MIME_TYPES = {
   '.ogg': 'audio/ogg',
   '.wav': 'audio/wav',
 };
+
+// SPA routes defined by upstream's React Router. Any GET to one of these
+// paths (or its sub-routes) should serve index.html so the SPA can route.
+const SPA_ROUTE_PREFIXES = [
+  '/lobby',
+  '/preparation',
+  '/game',
+  '/after',
+  '/bot-builder',
+  '/bot-admin',
+  '/sprite-viewer',
+  '/map-viewer',
+  '/gameboy',
+  '/translations',
+  '/auth',
+];
 
 function getMimeType(filepath) {
   const ext = extname(filepath).toLowerCase();
@@ -95,25 +118,35 @@ const server = createServer((req, res) => {
 
   const filepath = join(DIST_DIR, pathname);
 
-  // API paths that the game fetches from the server. In Tauri dev mode these
-  // are handled by the native allowlisted HTTP proxy instead of the dev server.
-  if (PROXY_API_PATHS.some((prefix) => pathname.startsWith(prefix))) {
-    res.writeHead(501, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      error: 'PACDeluxe native proxy required',
-      message: 'Run this build inside Tauri so the native upstream proxy can service API requests.'
-    }));
-    return;
-  }
-
-  // SPA fallback: if the file doesn't exist and the path has no extension,
-  // serve index.html so React Router can handle routes like /lobby, /game
-  if (!existsSync(filepath) && !extname(pathname)) {
+  // Known SPA routes -> index.html, upstream's React Router handles them.
+  if (SPA_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(prefix + '/'))) {
     serveFile(res, join(DIST_DIR, 'index.html'));
     return;
   }
 
-  serveFile(res, filepath);
+  // Local static asset (matches dist/ prefix or extension) -> serve from dist/.
+  if (isLocalStaticPath(pathname)) {
+    serveFile(res, filepath);
+    return;
+  }
+
+  // Non-static, non-SPA path that exists on disk (e.g. a new asset extension
+  // we haven't classified yet).
+  if (existsSync(filepath) && statSync(filepath).isFile()) {
+    serveFile(res, filepath);
+    return;
+  }
+
+  // Anything else is expected to be an upstream API call that the Tauri
+  // runtime proxy handles. When the dev server is used standalone without
+  // Tauri there is no proxy - tell the caller that explicitly instead of
+  // silently returning index.html (which would break JSON parsing).
+  res.writeHead(501, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    error: 'PACDeluxe native proxy required',
+    message: 'Upstream API requests are routed by the Tauri runtime. Run `npm run tauri:dev` instead of accessing this dev server directly.',
+    path: pathname,
+  }));
 });
 
 // Check if dist exists

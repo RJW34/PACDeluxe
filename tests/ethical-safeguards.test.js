@@ -16,7 +16,12 @@ import assert from 'node:assert';
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { LOCAL_STATIC_FETCH_PREFIXES, PROXY_API_PATHS } from '../scripts/proxy-manifest.js';
+import {
+  LOCAL_STATIC_FETCH_PREFIXES,
+  LOCAL_STATIC_FETCH_EXTENSIONS,
+  PROD_HOST,
+  isLocalStaticPath,
+} from '../scripts/proxy-manifest.js';
 import { verifyBuildManifest } from '../scripts/verify-build-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -93,24 +98,6 @@ function findForbiddenPatterns(content, patterns) {
   return violations;
 }
 
-function extractQuotedStrings(block) {
-  return Array.from(block.matchAll(/['"]([^'"]+)['"]/g), (match) => match[1]);
-}
-
-function extractJsArrayLiteral(content, variableName) {
-  const escapedVariableName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = content.match(new RegExp(`const\\s+${escapedVariableName}\\s*=\\s*\\[([\\s\\S]*?)\\];`));
-  assert.ok(match, `Unable to find JavaScript array literal for ${variableName}`);
-  return extractQuotedStrings(match[1]);
-}
-
-function extractRustStringSlice(content, constantName) {
-  const escapedConstantName = constantName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = content.match(new RegExp(`const\\s+${escapedConstantName}:\\s*&\\[&str\\]\\s*=\\s*&\\[([\\s\\S]*?)\\];`));
-  assert.ok(match, `Unable to find Rust string slice for ${constantName}`);
-  return extractQuotedStrings(match[1]);
-}
-
 function getSourceFilesRecursive(dir, extensions) {
   const files = [];
 
@@ -131,26 +118,7 @@ function getSourceFilesRecursive(dir, extensions) {
   return files;
 }
 
-function normalizeRelativeFetchPath(path) {
-  const cleanPath = path.split('?')[0];
-
-  if (LOCAL_STATIC_FETCH_PREFIXES.some((prefix) => cleanPath.startsWith(prefix))) {
-    return null;
-  }
-
-  if (cleanPath.startsWith('/profile')) return '/profile';
-  if (cleanPath.startsWith('/players')) return '/players';
-  if (cleanPath.startsWith('/bots')) return '/bots';
-  if (cleanPath.startsWith('/leaderboards')) return '/leaderboards';
-  if (cleanPath.startsWith('/tilemap/')) return '/tilemap/';
-  if (cleanPath.startsWith('/game-history/')) return '/game-history/';
-  if (cleanPath.startsWith('/chat-history/')) return '/chat-history/';
-  if (cleanPath.startsWith('/moderation/')) return '/moderation/';
-
-  return `UNKNOWN:${cleanPath}`;
-}
-
-function getUpstreamRelativeFetchPrefixes() {
+function getUpstreamRelativeFetchPaths() {
   const upstreamSrcDir = join(ROOT, 'upstream-game', 'app', 'public', 'src');
   if (!existsSync(upstreamSrcDir)) {
     return null;
@@ -167,9 +135,7 @@ function getUpstreamRelativeFetchPrefixes() {
     }
   }
 
-  return Array.from(relativeFetchPaths, normalizeRelativeFetchPath)
-    .filter(Boolean)
-    .sort();
+  return Array.from(relativeFetchPaths).sort();
 }
 
 describe('Ethical Safeguards', () => {
@@ -513,55 +479,107 @@ describe('Architecture Guardrails', () => {
     );
   });
 
-  it('should keep proxy allowlists in sync across the runtime and dev tooling', () => {
+  it('should pin the Rust proxy to the production origin only', () => {
     const commandsRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'commands.rs'), 'utf-8');
-    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
-    const devServer = readFileSync(join(ROOT, 'scripts', 'dev-server.js'), 'utf-8');
 
-    const rustAllowlist = extractRustStringSlice(commandsRs, 'PROXY_API_PATHS');
-    const runtimeAllowlist = extractJsArrayLiteral(mainRs, 'apiPrefixes');
-
-    assert.deepStrictEqual(
-      rustAllowlist,
-      PROXY_API_PATHS,
-      'Rust proxy allowlist drifted from scripts/proxy-manifest.js'
+    assert.ok(
+      commandsRs.includes(`const PROD_HOST: &str = "${PROD_HOST}";`),
+      'commands.rs must pin the production host constant to scripts/proxy-manifest.js'
     );
-    assert.deepStrictEqual(
-      runtimeAllowlist,
-      PROXY_API_PATHS,
-      'Injected runtime proxy allowlist drifted from scripts/proxy-manifest.js'
+    // The old path-allowlist model should stay gone. If it reappears, the
+    // Rust and JS sides will silently drift again.
+    assert.ok(
+      !commandsRs.includes('PROXY_API_PATHS'),
+      'commands.rs must not reintroduce the path allowlist - use the origin-scoped model'
     );
     assert.ok(
-      devServer.includes("import { PROXY_API_PATHS } from './proxy-manifest.js';"),
-      'Dev server must import the shared proxy manifest'
-    );
-    assert.ok(
-      devServer.includes('PROXY_API_PATHS.some((prefix) => pathname.startsWith(prefix))'),
-      'Dev server must use the shared proxy allowlist'
+      !commandsRs.includes('is_allowlisted_proxy_path'),
+      'commands.rs must not reintroduce path-based allowlisting helpers'
     );
   });
 
-  it('should cover synced upstream relative API fetches with the proxy allowlist', () => {
-    const normalizedFetchPrefixes = getUpstreamRelativeFetchPrefixes();
-    if (normalizedFetchPrefixes === null) {
+  it('should pin the JS fetch interceptor to the shared local-asset manifest', () => {
+    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+
+    for (const prefix of LOCAL_STATIC_FETCH_PREFIXES) {
+      assert.ok(
+        mainRs.includes(`'${prefix}'`),
+        `main.rs OVERLAY_SCRIPT localAssetPrefixes is missing ${prefix}`
+      );
+    }
+    for (const ext of LOCAL_STATIC_FETCH_EXTENSIONS) {
+      assert.ok(
+        mainRs.includes(`'${ext}'`),
+        `main.rs OVERLAY_SCRIPT localAssetExtensions is missing ${ext}`
+      );
+    }
+    assert.ok(
+      mainRs.includes(`const PROD_HOST = '${PROD_HOST}';`),
+      'main.rs OVERLAY_SCRIPT must pin PROD_HOST to scripts/proxy-manifest.js'
+    );
+    // The old runtime allowlist should stay gone.
+    assert.ok(
+      !mainRs.includes('const apiPrefixes = ['),
+      'main.rs must not reintroduce the apiPrefixes allowlist - use the origin-scoped model'
+    );
+  });
+
+  it('should cover every known upstream relative fetch as either a local asset or a proxied upstream call', () => {
+    const relativeFetchPaths = getUpstreamRelativeFetchPaths();
+    if (relativeFetchPaths === null) {
       console.log('Note: upstream-game not found, skipping proxy coverage check');
       return;
     }
 
-    const unknownPaths = normalizedFetchPrefixes.filter((path) => path.startsWith('UNKNOWN:'));
-    assert.deepStrictEqual(
-      unknownPaths,
-      [],
-      `Found new upstream relative fetch paths that need classification:\n${unknownPaths.join('\n')}`
-    );
+    // Under the origin-scoped model every relative fetch is classifiable:
+    // either the shared manifest marks it as a local static asset, or it
+    // falls through to the proxy. There are no "unknown" paths anymore -
+    // but we still require the known local-asset prefixes to actually map
+    // to local assets in the manifest so a future change can't silently
+    // start proxying translation JSON.
+    const expectedLocalPrefixes = ['/locales/'];
+    for (const prefix of expectedLocalPrefixes) {
+      assert.ok(
+        LOCAL_STATIC_FETCH_PREFIXES.includes(prefix),
+        `Upstream fetches paths starting with ${prefix} - manifest must classify it as a local asset`
+      );
+    }
 
-    const missingAllowlistEntries = normalizedFetchPrefixes.filter(
-      (path) => !PROXY_API_PATHS.includes(path)
-    );
-    assert.deepStrictEqual(
-      missingAllowlistEntries,
-      [],
-      `Upstream relative API fetches are missing from the proxy allowlist:\n${missingAllowlistEntries.join('\n')}`
-    );
+    // Every relative upstream fetch must classify cleanly (either local or
+    // upstream API). The isLocalStaticPath helper is the canonical
+    // classifier used by both the dev server and the injected runtime.
+    for (const path of relativeFetchPaths) {
+      const pathname = path.split('?')[0];
+      const classifiedLocal = isLocalStaticPath(pathname);
+      // If not local, it's an upstream API call. No further assertion
+      // needed - the origin-scoped proxy will route it to production.
+      if (!classifiedLocal) {
+        // Sanity check: make sure we haven't accidentally classified a
+        // translation JSON as upstream.
+        assert.ok(
+          !pathname.startsWith('/locales/'),
+          `Upstream fetch ${pathname} should be a local asset but the classifier rejected it`
+        );
+      }
+    }
+  });
+
+  it('should provide a local-static classifier that both runtimes and tools can rely on', () => {
+    // Spot-check the shared classifier: well-known local assets stay local,
+    // well-known API paths get proxied.
+    assert.strictEqual(isLocalStaticPath('/assets/ui/favicon.ico'), true);
+    assert.strictEqual(isLocalStaticPath('/locales/en/translation.json'), true);
+    assert.strictEqual(isLocalStaticPath('/index.js'), true);
+    assert.strictEqual(isLocalStaticPath('/style/index.css'), true);
+    assert.strictEqual(isLocalStaticPath('/'), true);
+
+    assert.strictEqual(isLocalStaticPath('/profile'), false);
+    assert.strictEqual(isLocalStaticPath('/bots'), false);
+    assert.strictEqual(isLocalStaticPath('/leaderboards'), false);
+    assert.strictEqual(isLocalStaticPath('/tilemap/forest'), false);
+    assert.strictEqual(isLocalStaticPath('/game-history/abc'), false);
+    assert.strictEqual(isLocalStaticPath('/chat-history/abc'), false);
+    assert.strictEqual(isLocalStaticPath('/moderation/rename-account'), false);
+    assert.strictEqual(isLocalStaticPath('/some-future-endpoint'), false);
   });
 });

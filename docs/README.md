@@ -8,7 +8,7 @@ PACDeluxe currently consists of:
 
 - a Tauri v2 desktop shell
 - a locally built upstream frontend served from `dist/`
-- a Rust native backend for system tuning, window control, updater behavior, and the allowlisted upstream HTTP proxy
+- a Rust native backend for system tuning, window control, updater behavior, and the origin-scoped upstream HTTP proxy
 - an injected runtime layer in `src-tauri/src/main.rs`
 - a build pipeline in `scripts/build-frontend.js`
 
@@ -47,7 +47,7 @@ The frontend build:
 1. Tauri loads `dist/index.html`
 2. native system optimizations are applied
 3. the injected PACDeluxe runtime is loaded from `src-tauri/src/main.rs`
-4. required upstream HTTP calls go through a native allowlisted proxy command
+4. upstream HTTP calls go through a native origin-scoped proxy command (routes to `https://pokemon-auto-chess.com`)
 5. gameplay still connects to the official Colyseus server
 
 ## Validation

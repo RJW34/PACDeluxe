@@ -9,15 +9,6 @@ export const REQUIRED_FIREBASE_KEYS = [
   'FIREBASE_APP_ID',
 ];
 
-export const PAC_API_PROXY_PATHS = [
-  '/profile',
-  '/bots',
-  '/leaderboards',
-  '/tilemap/',
-  '/game-history/',
-  '/chat-history/',
-];
-
 export const UPSTREAM_PATCHES = [
   {
     id: 'phaser-initial-resize',

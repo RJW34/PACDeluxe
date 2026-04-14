@@ -18,7 +18,7 @@ PACDeluxe is a native desktop client for [Pokemon Auto Chess](https://pokemon-au
 - Uses native system-performance tuning on supported platforms
 - Shows an in-app performance overlay
 - Adds non-competitive QoL such as booster `Flip All`, avatar `Equip`, session recovery, and updater UX
-- Uses a native allowlisted proxy for required upstream HTTP endpoints instead of relying on browser-security bypasses
+- Uses a native origin-scoped proxy for upstream HTTP requests instead of relying on browser-security bypasses
 
 All competitive gameplay remains server-authoritative.
 

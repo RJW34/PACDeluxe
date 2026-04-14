@@ -12,7 +12,7 @@ The app:
 - loads them in a Tauri window
 - applies native performance/system tuning
 - injects runtime UI/performance logic from `src-tauri/src/main.rs`
-- uses a native allowlisted proxy for required upstream HTTP requests
+- uses a native origin-scoped proxy for upstream HTTP requests (routes anything non-local to `https://pokemon-auto-chess.com`)
 
 ## Critical Constraint
 
@@ -33,10 +33,10 @@ PACDeluxe must not:
 | File | Role |
 |---|---|
 | `src-tauri/src/main.rs` | Tauri entry point and injected PACDeluxe runtime |
-| `src-tauri/src/commands.rs` | Tauri commands, updater flow, allowlisted HTTP proxy |
+| `src-tauri/src/commands.rs` | Tauri commands, updater flow, origin-scoped HTTP proxy |
 | `src-tauri/src/performance.rs` | System tuning and telemetry |
 | `scripts/build-manifest.js` | Canonical patch and config inventory |
-| `scripts/proxy-manifest.js` | Canonical upstream HTTP proxy allowlist |
+| `scripts/proxy-manifest.js` | Canonical local-asset classifier and shared origin constants |
 | `scripts/build-frontend.js` | Upstream patching and frontend bundling |
 | `scripts/verify-build-manifest.js` | Patch/doc drift detection |
 | `docs/PATCH_MANIFEST.md` | Canonical upstream patch inventory |

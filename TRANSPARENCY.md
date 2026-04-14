@@ -10,7 +10,7 @@ It:
 - loads that local frontend in a Tauri desktop shell
 - adds native system-performance features
 - injects a PACDeluxe runtime layer for overlay and non-competitive QoL behavior
-- proxies a small allowlist of upstream HTTP requests needed by the local-build client
+- proxies upstream HTTP requests to the production origin through a native origin-scoped proxy
 
 It does not modify competitive gameplay logic.
 
@@ -46,13 +46,16 @@ PACDeluxe currently injects runtime logic from `src-tauri/src/main.rs` for:
 
 ### Upstream HTTP proxy
 
-PACDeluxe now uses a native allowlisted proxy command for the local-build runtime instead of relying on `--disable-web-security`.
+PACDeluxe uses a native origin-scoped HTTP proxy for the local-build runtime instead of relying on `--disable-web-security`.
 
-The proxy is limited to PACDeluxe-owned needs such as:
+Scope (enforced by `src-tauri/src/commands.rs`):
 
-- official PAC API paths required by the local-build client
-- official status probe
-- official community-server manifest fetch
+- relative URLs → routed to `https://pokemon-auto-chess.com`
+- absolute HTTPS URLs → accepted only for `pokemon-auto-chess.com` (or subdomains)
+- exactly one read-only GitHub URL is allowed for the community-servers manifest
+- any other destination is rejected
+
+The proxy does not inspect or rewrite request or response bodies and is not used for non-HTTP game traffic (WebSocket game sessions still connect directly).
 
 ## Network Activity
 
@@ -61,7 +64,7 @@ PACDeluxe may contact:
 - `wss://pokemon-auto-chess.com` for game sessions
 - Firebase and Google endpoints for authentication
 - `https://github.com/RJW34/PACDeluxe/releases/latest/download/latest.json` for updater checks
-- allowlisted official PAC HTTP endpoints through the native proxy
+- official PAC HTTP endpoints through the native origin-scoped proxy
 - cached asset URLs during asset prewarm
 
 PACDeluxe does not operate its own telemetry or gameplay-data collection service.
@@ -103,4 +106,4 @@ PACDeluxe does not:
 - Build pipeline: `scripts/build-frontend.js`
 - Patch manifest: `docs/PATCH_MANIFEST.md`
 
-Last updated: 2026-03-27
+Last updated: 2026-04-13

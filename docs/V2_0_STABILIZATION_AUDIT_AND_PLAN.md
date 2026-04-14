@@ -1,6 +1,6 @@
 # PACDeluxe v2.0 Stabilization Audit and Implementation Plan
 
-Last updated: 2026-03-27
+Last updated: 2026-04-13
 
 Status note:
 
@@ -11,6 +11,26 @@ This document is the original audit and remediation plan snapshot from the stabi
 - `docs/ADR-0001-local-build-architecture.md`
 - `docs/PATCH_MANIFEST.md`
 - `TRANSPARENCY.md`
+
+## Update 2026-04-13
+
+The P0 network-model concerns described below are now addressed by the
+origin-scoped proxy rework:
+
+- `src-tauri/src/commands.rs` no longer uses a path allowlist; absolute URLs
+  are allowed only for `pokemon-auto-chess.com` (and subdomains) plus one
+  read-only GitHub URL for the community-server manifest, while any relative
+  path is routed to the production origin.
+- The injected runtime in `src-tauri/src/main.rs` proxies every request that
+  is not a local asset bundled in `dist/`, using the shared classifier in
+  `scripts/proxy-manifest.js`. New upstream endpoints no longer require a
+  PACDeluxe code change.
+- The Firebase popup auth bridge now intercepts `window.open` in the main
+  window and provides a mock `Window` object so Firebase's SDK can complete
+  `signInWithPopup()` over Tauri events.
+
+The historical audit text below is preserved as a record of what the
+stabilization pass addressed. It is no longer authoritative.
 
 ## Purpose
 

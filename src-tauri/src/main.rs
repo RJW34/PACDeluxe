@@ -4,7 +4,7 @@
 mod performance;
 mod commands;
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri::webview::NewWindowResponse;
 use tracing::{info, debug, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -139,16 +139,22 @@ fn cleanup_old_installation() {
 static POPUP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Script injected into auth popup windows to bridge Firebase's postMessage
-/// back to the main window via Tauri events.
+/// back to the main window via Tauri events, and to forward messages sent
+/// from the main window into the popup as synthetic MessageEvents.
 ///
-/// Problem: Tauri's `on_new_window` creates independent WebviewWindows with no
-/// `window.opener`, which breaks Firebase's popup auth flow (it relies on
-/// `window.opener.postMessage()` to return the OAuth result to the main window).
+/// Problem: Tauri opens popups as independent WebviewWindows that share no
+/// `window.opener` relationship with the main WebView. Firebase's popup auth
+/// flow depends on `window.opener.postMessage()` to return OAuth results, and
+/// the main window depends on posting messages back to the popup during the
+/// iframe-acknowledge phase of auth.
 ///
-/// Solution: Mock `window.opener` before any page JS runs. The mock's
-/// `postMessage` forwards messages via Tauri's event system. The main window's
-/// OVERLAY_SCRIPT listens for these events and re-dispatches them as native
-/// `MessageEvent`s so the Firebase SDK completes `signInWithPopup()` normally.
+/// Solution:
+///   - Mock `window.opener` so popup-side posts are forwarded via Tauri events.
+///   - Listen for main->popup events and dispatch them as MessageEvents in
+///     the popup's window so Firebase's handler receives them.
+///   - Provide `window.opener.location.replace` so the upstream `index.tsx`
+///     "block opening main app in popup" check does not throw when the popup
+///     navigates to a page that runs the upstream bundle.
 const AUTH_POPUP_BRIDGE_SCRIPT: &str = r#"
 (function() {
     if (!window.opener) {
@@ -160,19 +166,60 @@ const AUTH_POPUP_BRIDGE_SCRIPT: &str = r#"
                             data: data,
                             origin: window.location.origin
                         });
-                        console.log('[PACDeluxe Auth Bridge] Forwarded postMessage via Tauri event');
+                        console.log('[PACDeluxe Auth Bridge] Forwarded popup->main postMessage');
                     } else {
                         console.warn('[PACDeluxe Auth Bridge] Tauri event API not available');
                     }
                 } catch(e) {
-                    console.error('[PACDeluxe Auth Bridge] Failed to emit:', e);
+                    console.error('[PACDeluxe Auth Bridge] Failed to emit popup->main:', e);
                 }
             },
+            close: function() {
+                try { window.close(); } catch(_e) {}
+            },
             closed: false,
-            location: { href: '' }
+            focus: function() {},
+            blur: function() {},
+            location: {
+                href: '',
+                replace: function(newUrl) {
+                    // Upstream index.tsx calls this when the popup loads a
+                    // page that runs the main bundle (e.g. post-auth redirect
+                    // to /lobby). In the local-build runtime the main window
+                    // must not navigate externally - just inform the main
+                    // side that auth is done so it can close the popup.
+                    try {
+                        if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
+                            window.__TAURI__.event.emit('pac-popup-redirect-opener', { url: newUrl });
+                        }
+                    } catch(_e) {}
+                }
+            }
         };
         console.log('[PACDeluxe Auth Bridge] window.opener mock installed');
     }
+
+    // Main -> popup bridge: dispatch synthetic MessageEvents when the main
+    // window posts via the mock popup reference. Firebase's auth handler
+    // expects these during the IFRAME acknowledge phase.
+    try {
+        if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
+            window.__TAURI__.event.listen('pac-main-to-popup', function(event) {
+                var payload = event && event.payload;
+                if (!payload) return;
+                try {
+                    window.dispatchEvent(new MessageEvent('message', {
+                        data: payload.data,
+                        origin: payload.targetOrigin || '*',
+                        source: window.opener
+                    }));
+                    console.log('[PACDeluxe Auth Bridge] Dispatched main->popup message');
+                } catch(e) {
+                    console.error('[PACDeluxe Auth Bridge] Failed to dispatch main->popup:', e);
+                }
+            });
+        }
+    } catch(_e) {}
 })();
 "#;
 
@@ -255,79 +302,101 @@ const OVERLAY_SCRIPT: &str = r#"
         });
         console.log('[PACDeluxe] Canvas context menu disabled');
 
-        // === NATIVE HTTP PROXY FOR LOCAL SERVING ===
-        // The locally served client runs on the Tauri origin, so browser fetches
-        // to upstream relative API paths must go through a native allowlisted
-        // proxy instead of disabling browser security globally.
+        // === NATIVE HTTP PROXY FOR LOCAL SERVING (origin-scoped) ===
+        //
+        // The locally-built game runs on the Tauri origin (tauri://localhost,
+        // or http://localhost:1420 under `tauri dev`). Every request that is
+        // not a local asset in dist/ must be routed to the production origin
+        // through the native Rust proxy, because the browser security model
+        // would otherwise treat it as a cross-origin call.
+        //
+        // Model: proxy everything that is NOT a local asset. This inverts the
+        // previous allowlist approach - upstream can add new API endpoints
+        // without requiring a PACDeluxe code change.
         (function() {
-            const PROD_ORIGIN = 'https://pokemon-auto-chess.com';
+            const PROD_HOST = 'pokemon-auto-chess.com';
             const COMMUNITY_SERVERS_URL = 'https://raw.githubusercontent.com/keldaanCommunity/pokemonAutoChess/master/community-servers.md';
             const invoke = window.__TAURI__?.core?.invoke;
-            // Keep this list in sync with scripts/proxy-manifest.js and
-            // src-tauri/src/commands.rs.
-            const apiPrefixes = [
-                '/profile', '/players', '/bots', '/leaderboards', '/tilemap/',
-                '/game-history/', '/chat-history/', '/moderation/'
+
+            if (!invoke) {
+                console.warn('[PACDeluxe] Tauri invoke unavailable, native proxy disabled');
+                return;
+            }
+
+            // Path prefixes for files bundled into dist/ (kept in sync with
+            // scripts/proxy-manifest.js LOCAL_STATIC_FETCH_PREFIXES).
+            const localAssetPrefixes = [
+                '/assets/', '/style/', '/locales/', '/pokechess/', '/changelog/'
             ];
 
-            function isApiPath(pathname) {
-                return apiPrefixes.some((prefix) => pathname.startsWith(prefix));
+            // File extensions served locally from dist/. Deliberately excludes
+            // .json: some upstream endpoints may respond as JSON at URLs that
+            // happen to end in .json, and we don't want to misclassify them.
+            const localAssetExtensions = new Set([
+                '.html', '.js', '.mjs', '.map', '.css',
+                '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
+                '.mp3', '.ogg', '.wav', '.m4a',
+                '.woff', '.woff2', '.ttf', '.otf'
+            ]);
+
+            function isLocalAssetPath(pathname) {
+                if (pathname === '/' || pathname === '') return true;
+                for (const prefix of localAssetPrefixes) {
+                    if (pathname.startsWith(prefix)) return true;
+                }
+                const dot = pathname.lastIndexOf('.');
+                if (dot >= 0) {
+                    const ext = pathname.slice(dot).toLowerCase();
+                    if (localAssetExtensions.has(ext)) return true;
+                }
+                return false;
             }
 
-            function normalizeProxyUrl(url) {
-                try {
-                    const parsed = new URL(url, window.location.origin);
-                    if (parsed.origin === window.location.origin) {
-                        return parsed.pathname + parsed.search;
-                    }
-                    return parsed.toString();
-                } catch (_error) {
-                    return url;
-                }
+            function toAbsolute(url) {
+                try { return new URL(url, window.location.origin); }
+                catch (_error) { return null; }
             }
 
-            function isProxyableUrl(url, method) {
-                if (typeof url !== 'string') return false;
+            function normalizeProxyUrl(absolute) {
+                if (absolute.origin === window.location.origin) {
+                    return absolute.pathname + absolute.search;
+                }
+                return absolute.toString();
+            }
 
-                if (url.startsWith('/')) {
-                    return isApiPath(url);
+            function isProxyableUrl(absolute, method) {
+                // Tauri-origin request → proxy unless it's a local asset
+                if (absolute.origin === window.location.origin) {
+                    return !isLocalAssetPath(absolute.pathname);
                 }
 
-                if (url === COMMUNITY_SERVERS_URL) {
+                // Production origin or any of its subdomains → always proxy
+                const host = absolute.host;
+                if (host === PROD_HOST || host.endsWith('.' + PROD_HOST)) {
+                    return true;
+                }
+
+                // Community-servers manifest on GitHub → read-only
+                if (absolute.toString() === COMMUNITY_SERVERS_URL) {
                     return method === 'GET' || method === 'HEAD';
                 }
 
-                if (!url.startsWith(PROD_ORIGIN)) {
-                    return false;
-                }
-
-                try {
-                    const parsed = new URL(url);
-                    return isApiPath(parsed.pathname) || ((method === 'GET' || method === 'HEAD') && parsed.pathname === '/status');
-                } catch (_error) {
-                    return false;
-                }
+                return false;
             }
 
-            async function proxyFetch(request) {
+            async function proxyFetch(request, effectiveUrl) {
                 const method = (request.method || 'GET').toUpperCase();
-                const url = normalizeProxyUrl(request.url);
                 const headers = {};
-                request.headers.forEach((value, key) => {
-                    headers[key] = value;
-                });
+                request.headers.forEach((value, key) => { headers[key] = value; });
 
                 let body = null;
                 if (method !== 'GET' && method !== 'HEAD') {
-                    try {
-                        body = await request.clone().text();
-                    } catch (_error) {
-                        body = null;
-                    }
+                    try { body = await request.clone().text(); }
+                    catch (_error) { body = null; }
                 }
 
                 const proxied = await invoke('proxy_http_request', {
-                    request: { url, method, headers, body }
+                    request: { url: effectiveUrl, method, headers, body }
                 });
 
                 const response = new Response(proxied.body, {
@@ -349,9 +418,9 @@ const OVERLAY_SCRIPT: &str = r#"
                     ? new Request(input, init)
                     : new Request(input, init);
                 const method = (request.method || 'GET').toUpperCase();
-                const url = normalizeProxyUrl(request.url);
+                const absolute = toAbsolute(request.url);
 
-                if (!invoke || !isProxyableUrl(url, method)) {
+                if (!absolute || !isProxyableUrl(absolute, method)) {
                     return nativeFetch(input, init);
                 }
 
@@ -359,31 +428,111 @@ const OVERLAY_SCRIPT: &str = r#"
                     throw request.signal.reason || new DOMException('The operation was aborted.', 'AbortError');
                 }
 
-                return proxyFetch(request);
+                return proxyFetch(request, normalizeProxyUrl(absolute));
             };
 
-            console.log('[PACDeluxe] Native upstream proxy active for local serving');
+            console.log('[PACDeluxe] Native proxy active (origin-scoped model)');
         })();
 
-        // === AUTH POPUP BRIDGE LISTENER ===
-        // Receives Firebase auth results forwarded from popup windows via Tauri
-        // events and re-dispatches them as native MessageEvents so the Firebase
-        // SDK completes signInWithPopup() normally.
+        // === AUTH POPUP BRIDGE (MAIN SIDE) ===
+        //
+        // Firebase's signInWithPopup() calls window.open() and uses the
+        // returned Window reference to:
+        //   - poll popup.closed for cancellation detection
+        //   - post into the popup during the iframe-ack phase
+        //   - close the popup after auth completes
+        //   - verify event.source === popup on incoming MessageEvents
+        //
+        // In Tauri, the main window's native window.open() returns null when
+        // on_new_window intercepts the creation, so Firebase would throw
+        // auth/popup-blocked. We intercept window.open() to return a mock
+        // Window that proxies every operation through Tauri events to the
+        // actual popup webview.
         (function() {
+            const emit = window.__TAURI__?.event?.emit;
             const listen = window.__TAURI__?.event?.listen;
-            if (listen) {
-                listen('pac-auth-popup-result', function(event) {
-                    console.log('[PACDeluxe] Received auth result from popup bridge');
-                    var payload = event.payload;
-                    if (payload && payload.data !== undefined) {
-                        window.dispatchEvent(new MessageEvent('message', {
-                            data: payload.data,
-                            origin: payload.origin || ''
-                        }));
-                    }
-                });
-                console.log('[PACDeluxe] Auth popup bridge listener active');
+            if (!emit || !listen) {
+                console.warn('[PACDeluxe] Tauri event API unavailable, popup bridge inactive');
+                return;
             }
+
+            let activeMockPopup = null;
+
+            function createMockPopup(initialUrl) {
+                const mock = {
+                    closed: false,
+                    _href: initialUrl || '',
+                    location: {
+                        get href() { return mock._href; },
+                        set href(v) { mock._href = v; }
+                    },
+                    postMessage: function(data, targetOrigin) {
+                        try {
+                            emit('pac-main-to-popup', { data: data, targetOrigin: targetOrigin });
+                        } catch(e) {
+                            console.error('[PACDeluxe] Failed to forward main->popup message:', e);
+                        }
+                    },
+                    close: function() {
+                        mock.closed = true;
+                        try { emit('pac-close-auth-popup', {}); }
+                        catch(e) { console.error('[PACDeluxe] Failed to request popup close:', e); }
+                    },
+                    focus: function() {},
+                    blur: function() {}
+                };
+                return mock;
+            }
+
+            // Intercept window.open so Firebase gets a usable reference even
+            // when Tauri's on_new_window suppresses the native window creation.
+            const nativeOpen = window.open.bind(window);
+            window.open = function(url, name, features) {
+                // Let the native call go through - this is what triggers
+                // Tauri's on_new_window handler that actually creates the
+                // popup webview. The return value from native is null under
+                // Tauri interception, so we discard it and return a mock.
+                try { nativeOpen(url, name, features); } catch(_e) {}
+
+                activeMockPopup = createMockPopup(url);
+                console.log('[PACDeluxe] window.open intercepted for popup:', url);
+                return activeMockPopup;
+            };
+
+            // Popup -> main: auth result forwarded from popup's window.opener mock
+            listen('pac-auth-popup-result', function(event) {
+                console.log('[PACDeluxe] Received popup->main auth message');
+                const payload = event && event.payload;
+                if (!payload || payload.data === undefined) return;
+                try {
+                    window.dispatchEvent(new MessageEvent('message', {
+                        data: payload.data,
+                        origin: payload.origin || '',
+                        source: activeMockPopup
+                    }));
+                } catch(e) {
+                    console.error('[PACDeluxe] Failed to dispatch auth MessageEvent:', e);
+                }
+            });
+
+            // Popup was destroyed (Tauri watchdog, user closed, or auth done)
+            listen('pac-popup-closed', function(_event) {
+                if (activeMockPopup && !activeMockPopup.closed) {
+                    activeMockPopup.closed = true;
+                    console.log('[PACDeluxe] Mock popup marked closed by Tauri event');
+                }
+            });
+
+            // Upstream index.tsx calls window.opener.location.replace when a
+            // popup loads the main bundle (post-auth). We don't navigate the
+            // main window externally; the popup's Tauri watchdog already
+            // closes it.
+            listen('pac-popup-redirect-opener', function(event) {
+                const url = event && event.payload && event.payload.url;
+                console.log('[PACDeluxe] Popup requested opener redirect (ignored):', url);
+            });
+
+            console.log('[PACDeluxe] Auth popup bridge ready (window.open intercepted)');
         })();
 
         // === ASSET CACHE WITH VERSION CHECK ===
@@ -1231,6 +1380,24 @@ fn main() {
 
                 match popup {
                     Ok(window) => {
+                        // Notify the main window when the popup is destroyed
+                        // so the JS-side mock can mark its `closed` flag.
+                        // Firebase polls popup.closed to detect user
+                        // cancellation of the auth flow.
+                        let app_for_close = app_handle.clone();
+                        let label_for_close = label.clone();
+                        let popup_closed_event = popup_closed.clone();
+                        window.on_window_event(move |event| {
+                            if let WindowEvent::Destroyed = event {
+                                popup_closed_event.store(true, Ordering::SeqCst);
+                                let _ = app_for_close.emit(
+                                    "pac-popup-closed",
+                                    serde_json::json!({ "label": label_for_close }),
+                                );
+                                debug!("Auth popup {} destroyed, notified main", label_for_close);
+                            }
+                        });
+
                         // Start timeout watchdog thread to prevent orphaned popups
                         std::thread::spawn(move || {
                             const POPUP_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
@@ -1288,6 +1455,22 @@ fn main() {
 
             // Initialize pending update state for updater
             app.manage(commands::PendingUpdate(std::sync::Mutex::new(None)));
+
+            // Global listener: when the main-window mock popup calls
+            // popup.close() (Firebase SDK does this after auth), it emits
+            // pac-close-auth-popup. Close every open auth-popup-* window.
+            // Clone a fresh handle from `app` - the earlier `app_handle` was
+            // already moved into the on_new_window closure.
+            let app_for_close_listener = app.handle().clone();
+            app.listen_any("pac-close-auth-popup", move |_event| {
+                let windows = app_for_close_listener.webview_windows();
+                for (label, webview_window) in windows {
+                    if label.starts_with("auth-popup-") {
+                        debug!("Closing auth popup {} at SDK request", label);
+                        let _ = webview_window.close();
+                    }
+                }
+            });
 
             info!("Application ready");
             Ok(())
