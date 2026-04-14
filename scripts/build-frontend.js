@@ -379,21 +379,46 @@ function applyUpstreamPatches() {
     log(`Applied upstream patch: ${getPatchMeta('network-endpoint-hardcode').id}`);
   }
 
-  // === PATCH 4: Hardcode signInSuccessUrl for local-build architecture ===
-  // Defensive patch — popup auth may not use this, but prevents broken redirects.
+  // === PATCH 4: Switch Firebase auth to redirect flow for local-build ===
+  // Popup auth depends on iframe<->popup postMessage plumbing that breaks
+  // inside WebView2 when the main window is served from http://localhost.
+  // Redirect flow navigates the whole page to Google OAuth and back -
+  // no popup window, no iframe relay, no window.opener dance. It works
+  // reliably because our origin is in Firebase's authorized-domains list.
+  //
+  // The signInSuccessUrl becomes a runtime expression so Firebase returns
+  // to our exact local origin (http://localhost:<port>) - hard-coding
+  // pokemon-auto-chess.com would bounce the main window to the live site.
   if (existsSync(LOGIN_FILE)) {
     let loginContent = readFileSync(LOGIN_FILE, 'utf-8')
       .replace(/\r\n/g, '\n');
-    if (!loginContent.includes('"https://pokemon-auto-chess.com/lobby"')) {
-      if (loginContent.includes('signInSuccessUrl: window.location.href + "lobby"')) {
-        loginContent = loginContent.replace(
-          'signInSuccessUrl: window.location.href + "lobby"',
-          'signInSuccessUrl: "https://pokemon-auto-chess.com/lobby"'
-        );
-        writeFileSync(LOGIN_FILE, loginContent);
-        log(`Applied upstream patch: ${getPatchMeta('login-success-url').id}`);
-      }
+
+    if (loginContent.includes('signInFlow: "popup"')) {
+      loginContent = loginContent.replace(
+        'signInFlow: "popup"',
+        'signInFlow: "redirect"'
+      );
+      log(`Applied upstream patch: ${getPatchMeta('login-signin-flow').id}`);
     }
+
+    if (loginContent.includes('signInSuccessUrl: window.location.href + "lobby"')) {
+      loginContent = loginContent.replace(
+        'signInSuccessUrl: window.location.href + "lobby"',
+        'signInSuccessUrl: window.location.origin + "/lobby"'
+      );
+      log(`Applied upstream patch: ${getPatchMeta('login-success-url').id}`);
+    } else if (loginContent.includes('signInSuccessUrl: "https://pokemon-auto-chess.com/lobby"')) {
+      // Previous PACDeluxe versions hard-coded the production URL; rewrite
+      // back to a same-origin dynamic expression so redirect flow returns
+      // to our local app.
+      loginContent = loginContent.replace(
+        'signInSuccessUrl: "https://pokemon-auto-chess.com/lobby"',
+        'signInSuccessUrl: window.location.origin + "/lobby"'
+      );
+      log(`Applied upstream patch: ${getPatchMeta('login-success-url').id} (rewrite)`);
+    }
+
+    writeFileSync(LOGIN_FILE, loginContent);
   }
 
   // === PATCH 5: Fix anonymous login redirect for local serving ===

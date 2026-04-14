@@ -26,9 +26,14 @@ export const UPSTREAM_PATCHES = [
     summary: 'Pins the Colyseus WebSocket endpoint to the official production server for local-build runtime use.',
   },
   {
+    id: 'login-signin-flow',
+    file: 'app/public/src/pages/component/auth/login.tsx',
+    summary: 'Switches Firebase auth from popup to redirect flow so OAuth works inside WebView2 without iframe<->popup postMessage plumbing.',
+  },
+  {
     id: 'login-success-url',
     file: 'app/public/src/pages/component/auth/login.tsx',
-    summary: 'Pins Firebase auth success redirect handling to the official lobby URL.',
+    summary: 'Points Firebase auth success redirect back to the local-build origin via `window.location.origin + "/lobby"`.',
   },
   {
     id: 'anonymous-login-redirect',
