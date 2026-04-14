@@ -85,3 +85,4 @@ pacbutton*.png
 .tauri-private.key
 .claude/scheduled_tasks.lock
 .playwright-mcp/
+.codex_audit/

@@ -1,6 +1,6 @@
 [package]
 name = "pac-deluxe"
-version = "2.0.3"
+version = "2.0.4"
 description = "Native performance client for Pokemon Auto Chess"
 authors = ["PACDeluxe Contributors"]
 edition = "2021"
@@ -22,6 +22,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-localhost = "2"
+portpicker = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

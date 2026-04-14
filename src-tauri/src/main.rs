@@ -1231,6 +1231,21 @@ const OVERLAY_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Resolve the local HTTP port for the in-process `tauri-plugin-localhost`
+/// server. We prefer a fixed port so that the webview's origin
+/// (`http://localhost:<PORT>`) is stable across sessions - changing the port
+/// would reset cookies, IndexedDB, and localStorage every restart. If the
+/// preferred port is taken we fall back to any free port rather than failing
+/// to launch; the app then gets a fresh storage partition that session.
+fn pick_localhost_port() -> u16 {
+    const PREFERRED: u16 = 37529;
+    if std::net::TcpListener::bind(("127.0.0.1", PREFERRED)).is_ok() {
+        PREFERRED
+    } else {
+        portpicker::pick_unused_port().unwrap_or(PREFERRED)
+    }
+}
+
 fn main() {
     // Initialize logging
     let subscriber = FmtSubscriber::builder()
@@ -1239,6 +1254,14 @@ fn main() {
     tracing::subscriber::set_global_default(subscriber).ok();
 
     info!("Starting PACDeluxe");
+
+    // Pick the port before building Tauri so the plugin and the main
+    // window both agree on it. Firebase's OAuth flow requires an
+    // authorized origin - the PAC Firebase project accepts `localhost`
+    // at any port, but not `tauri.localhost` (the default Tauri origin
+    // on Windows/Linux).
+    let localhost_port = pick_localhost_port();
+    info!("Serving frontend on http://localhost:{}", localhost_port);
 
     // Set WebView2 Chromium flags for real GPU performance gains
     // Must be set before any WebView2 instance is created
@@ -1260,10 +1283,14 @@ fn main() {
     performance::apply_system_optimizations();
 
     tauri::Builder::default()
+        // Serve dist/ over a local HTTP server so the webview origin is
+        // `http://localhost:<port>` - an authorized Firebase domain that
+        // lets OAuth popup sign-in complete normally.
+        .plugin(tauri_plugin_localhost::Builder::new(localhost_port).build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .setup(|app| {
+        .setup(move |app| {
             let app_handle = app.handle().clone();
 
             // Get version for window title (add Dev suffix in debug builds)
@@ -1274,11 +1301,17 @@ fn main() {
                 format!("PACDeluxe v{}", version)
             };
 
-            // Create window programmatically with on_page_load handler
+            // Create window programmatically with on_page_load handler.
+            // Load from the localhost plugin's HTTP server rather than the
+            // custom tauri:// scheme so that Firebase accepts the origin
+            // for OAuth popup sign-in.
+            let main_url = format!("http://localhost:{}/", localhost_port)
+                .parse()
+                .expect("localhost URL must parse");
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::App("index.html".into())
+                WebviewUrl::External(main_url)
             )
             .title(&title)
             .inner_size(1280.0, 900.0)
