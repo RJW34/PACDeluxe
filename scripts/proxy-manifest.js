@@ -70,17 +70,23 @@ export const COMMUNITY_SERVERS_MANIFEST_URL =
 /**
  * Classify a local pathname as a static local asset or an upstream request.
  *
+ * Callers are expected to pass a clean pathname, but strip `?` and `#`
+ * defensively so a fragment or query on an extension path doesn't flip
+ * the classification.
+ *
  * @param {string} pathname
  * @returns {boolean} true if the path should be served from dist/
  */
 export function isLocalStaticPath(pathname) {
   if (!pathname || pathname === '/' || pathname === '') return true;
+  const clean = pathname.split('?')[0].split('#')[0];
+  if (!clean || clean === '/') return true;
   for (const prefix of LOCAL_STATIC_FETCH_PREFIXES) {
-    if (pathname.startsWith(prefix)) return true;
+    if (clean.startsWith(prefix)) return true;
   }
-  const dot = pathname.lastIndexOf('.');
+  const dot = clean.lastIndexOf('.');
   if (dot >= 0) {
-    const ext = pathname.slice(dot).toLowerCase();
+    const ext = clean.slice(dot).toLowerCase();
     if (LOCAL_STATIC_FETCH_EXTENSIONS.includes(ext)) return true;
   }
   return false;

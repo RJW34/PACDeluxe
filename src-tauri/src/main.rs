@@ -199,27 +199,11 @@ const AUTH_POPUP_BRIDGE_SCRIPT: &str = r#"
         console.log('[PACDeluxe Auth Bridge] window.opener mock installed');
     }
 
-    // Main -> popup bridge: dispatch synthetic MessageEvents when the main
-    // window posts via the mock popup reference. Firebase's auth handler
-    // expects these during the IFRAME acknowledge phase.
-    try {
-        if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
-            window.__TAURI__.event.listen('pac-main-to-popup', function(event) {
-                var payload = event && event.payload;
-                if (!payload) return;
-                try {
-                    window.dispatchEvent(new MessageEvent('message', {
-                        data: payload.data,
-                        origin: payload.targetOrigin || '*',
-                        source: window.opener
-                    }));
-                    console.log('[PACDeluxe Auth Bridge] Dispatched main->popup message');
-                } catch(e) {
-                    console.error('[PACDeluxe Auth Bridge] Failed to dispatch main->popup:', e);
-                }
-            });
-        }
-    } catch(_e) {}
+    // Main -> popup MessageEvent dispatch is performed by the Rust side
+    // via webview.eval() (see the pac-main-to-popup handler in main.rs).
+    // That avoids registering a fresh JS listener on every cross-origin
+    // navigation the popup performs during OAuth, which would otherwise
+    // accumulate zombie handlers on the Rust event bus.
 })();
 "#;
 
@@ -484,18 +468,37 @@ const OVERLAY_SCRIPT: &str = r#"
                 return mock;
             }
 
+            // Return a mock only for Firebase/OAuth popup URLs. The upstream
+            // game also opens plain external links via window.open(url,
+            // "_blank") (Discord, Patreon) - those need the old null-return
+            // so they don't clobber activeMockPopup or accidentally inherit
+            // auth-popup semantics in the listeners below.
+            function isAuthPopupUrl(url) {
+                if (!url) return false;
+                const s = String(url).toLowerCase();
+                return s.indexOf('/__/auth/') !== -1
+                    || s.indexOf('firebaseapp.com') !== -1
+                    || s.indexOf('accounts.google.com') !== -1
+                    || s.indexOf('oauth') !== -1;
+            }
+
             // Intercept window.open so Firebase gets a usable reference even
             // when Tauri's on_new_window suppresses the native window creation.
             const nativeOpen = window.open.bind(window);
             window.open = function(url, name, features) {
                 // Let the native call go through - this is what triggers
                 // Tauri's on_new_window handler that actually creates the
-                // popup webview. The return value from native is null under
-                // Tauri interception, so we discard it and return a mock.
+                // popup webview.
                 try { nativeOpen(url, name, features); } catch(_e) {}
 
+                if (!isAuthPopupUrl(url)) {
+                    // Non-auth popup (external link) - preserve the
+                    // pre-intercept null-return behavior.
+                    return null;
+                }
+
                 activeMockPopup = createMockPopup(url);
-                console.log('[PACDeluxe] window.open intercepted for popup:', url);
+                console.log('[PACDeluxe] window.open intercepted for auth popup:', url);
                 return activeMockPopup;
             };
 
@@ -1468,6 +1471,47 @@ fn main() {
                     if label.starts_with("auth-popup-") {
                         debug!("Closing auth popup {} at SDK request", label);
                         let _ = webview_window.close();
+                    }
+                }
+            });
+
+            // Main -> popup MessageEvent dispatch. The main window's mock
+            // popup.postMessage() emits pac-main-to-popup; we find the
+            // active auth-popup webview and eval a small dispatch script.
+            //
+            // Doing this via webview.eval (rather than a JS-side listener
+            // in AUTH_POPUP_BRIDGE_SCRIPT) avoids accumulating zombie
+            // handlers every time the popup navigates cross-origin during
+            // the OAuth flow - the JS listener would be re-registered on
+            // each new page load while the old Rust-side registration
+            // persisted.
+            let app_for_m2p = app.handle().clone();
+            app.listen_any("pac-main-to-popup", move |event| {
+                let payload_json = event.payload();
+                let windows = app_for_m2p.webview_windows();
+                for (label, webview_window) in windows {
+                    if !label.starts_with("auth-popup-") {
+                        continue;
+                    }
+                    // payload_json is JSON, which is valid JS syntax -
+                    // interpolating it as an expression is safe.
+                    let script = format!(
+                        r#"(function() {{
+  try {{
+    var __pac_payload = {};
+    window.dispatchEvent(new MessageEvent('message', {{
+      data: __pac_payload && __pac_payload.data,
+      origin: (__pac_payload && __pac_payload.targetOrigin) || '*',
+      source: window.opener
+    }}));
+  }} catch (e) {{
+    console.error('[PACDeluxe Auth Bridge] main->popup dispatch failed:', e);
+  }}
+}})();"#,
+                        payload_json
+                    );
+                    if let Err(e) = webview_window.eval(&script) {
+                        warn!("Failed to eval main->popup bridge in {}: {}", label, e);
                     }
                 }
             });

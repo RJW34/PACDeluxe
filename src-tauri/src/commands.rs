@@ -126,8 +126,28 @@ pub async fn proxy_http_request(request: ProxyHttpRequest) -> Result<ProxyHttpRe
     let reqwest_method = Method::from_bytes(method.as_bytes())
         .map_err(|e| format!("Unsupported HTTP method {}: {}", method, e))?;
 
+    // Custom redirect policy: only follow redirects that stay on the
+    // production host (or a subdomain). A 3xx to any other origin could
+    // leak cookies/headers the upstream server scoped to its own origin.
+    // reqwest's default policy would follow cross-origin redirects; this
+    // keeps the proxy's effective reachability aligned with
+    // resolve_proxy_target's allowlist.
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.stop();
+        }
+        let host = attempt.url().host_str().unwrap_or_default();
+        let on_prod = host == PROD_HOST
+            || host.ends_with(&format!(".{}", PROD_HOST));
+        if on_prod {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    });
+
     let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(redirect_policy)
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| format!("Failed to build HTTP proxy client: {}", e))?;

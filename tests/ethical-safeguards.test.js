@@ -581,5 +581,56 @@ describe('Architecture Guardrails', () => {
     assert.strictEqual(isLocalStaticPath('/chat-history/abc'), false);
     assert.strictEqual(isLocalStaticPath('/moderation/rename-account'), false);
     assert.strictEqual(isLocalStaticPath('/some-future-endpoint'), false);
+
+    // Queries and fragments must not flip classification.
+    assert.strictEqual(isLocalStaticPath('/assets/foo.png?v=1'), true);
+    assert.strictEqual(isLocalStaticPath('/index.js#abc'), true);
+    assert.strictEqual(isLocalStaticPath('/profile?t=1'), false);
+    assert.strictEqual(isLocalStaticPath('/bots#top'), false);
+  });
+
+  it('should URL-gate the main-window window.open mock so non-auth popups do not clobber activeMockPopup', () => {
+    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+    // The interceptor must check for an auth-looking URL before returning
+    // a mock, otherwise Discord/Patreon _blank popups would replace the
+    // Firebase auth popup reference mid-flow.
+    assert.ok(
+      mainRs.includes('function isAuthPopupUrl(url)'),
+      'OVERLAY_SCRIPT must gate its window.open mock via an auth-URL predicate'
+    );
+    assert.ok(
+      mainRs.includes("if (!isAuthPopupUrl(url))"),
+      'window.open mock must return early for non-auth URLs'
+    );
+  });
+
+  it('should bridge main->popup MessageEvents from Rust rather than a re-registered JS listener', () => {
+    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+    // Rust-side dispatch avoids accumulating zombie listeners on the
+    // Tauri event bus every time the popup navigates cross-origin during
+    // OAuth (the JS initialization_script would otherwise re-register).
+    assert.ok(
+      mainRs.includes('app.listen_any("pac-main-to-popup"'),
+      'setup() must register a Rust-side listener for pac-main-to-popup'
+    );
+    assert.ok(
+      !mainRs.includes("event.listen('pac-main-to-popup'"),
+      'AUTH_POPUP_BRIDGE_SCRIPT must not re-register a JS listener for pac-main-to-popup on every popup page load'
+    );
+  });
+
+  it('should keep the proxy redirect policy scoped to the production origin', () => {
+    const commandsRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'commands.rs'), 'utf-8');
+    // If a redirect target is off-origin, reqwest could leak headers or
+    // cookies the server scoped to its own origin. The custom policy
+    // must reject non-prod hosts.
+    assert.ok(
+      commandsRs.includes('reqwest::redirect::Policy::custom'),
+      'proxy_http_request must use a custom redirect policy, not Policy::limited'
+    );
+    assert.ok(
+      !commandsRs.includes('Policy::limited(5)'),
+      'proxy_http_request must not fall back to reqwest\'s default cross-origin following'
+    );
   });
 });
