@@ -623,14 +623,20 @@ describe('Architecture Guardrails', () => {
     const commandsRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'commands.rs'), 'utf-8');
     // If a redirect target is off-origin, reqwest could leak headers or
     // cookies the server scoped to its own origin. The custom policy
-    // must reject non-prod hosts.
+    // must reject non-prod hosts. The actual host/scheme rule is unit
+    // tested in Rust via is_safe_proxy_redirect_target — here we guard
+    // against a regression that drops the custom policy altogether.
     assert.ok(
       commandsRs.includes('reqwest::redirect::Policy::custom'),
       'proxy_http_request must use a custom redirect policy, not Policy::limited'
     );
     assert.ok(
-      !commandsRs.includes('Policy::limited(5)'),
-      'proxy_http_request must not fall back to reqwest\'s default cross-origin following'
+      !commandsRs.includes('Policy::limited('),
+      'proxy_http_request must not fall back to reqwest\'s built-in redirect policy'
+    );
+    assert.ok(
+      commandsRs.includes('fn is_safe_proxy_redirect_target'),
+      'proxy_http_request must delegate redirect validation to is_safe_proxy_redirect_target'
     );
   });
 });

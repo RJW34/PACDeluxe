@@ -119,6 +119,27 @@ fn resolve_proxy_target(url: &str, method: &str) -> Result<Url, String> {
     Err(format!("Proxy target not allowlisted: {}", url))
 }
 
+/// Decide whether a redirect URL is safe to follow from the proxy.
+///
+/// Rules (more restrictive than `resolve_proxy_target` because an upstream
+/// 3xx target has not passed through the JS classifier):
+///   - HTTPS only (same-host HTTP downgrade would leak headers in the clear)
+///   - host must equal PROD_HOST or be a subdomain of it
+///
+/// GitHub's raw.githubusercontent.com is never a valid redirect target here:
+/// the only github URL we ever proxy is the exact community-server manifest,
+/// and its responses should not redirect off-origin.
+fn is_safe_proxy_redirect_target(url: &Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let host = match url.host_str() {
+        Some(h) => h,
+        None => return false,
+    };
+    host == PROD_HOST || host.ends_with(&format!(".{}", PROD_HOST))
+}
+
 #[tauri::command]
 pub async fn proxy_http_request(request: ProxyHttpRequest) -> Result<ProxyHttpResponse, String> {
     let method = request.method.unwrap_or_else(|| "GET".to_string());
@@ -127,19 +148,24 @@ pub async fn proxy_http_request(request: ProxyHttpRequest) -> Result<ProxyHttpRe
         .map_err(|e| format!("Unsupported HTTP method {}: {}", method, e))?;
 
     // Custom redirect policy: only follow redirects that stay on the
-    // production host (or a subdomain). A 3xx to any other origin could
-    // leak cookies/headers the upstream server scoped to its own origin.
-    // reqwest's default policy would follow cross-origin redirects; this
+    // production host (or a subdomain) over HTTPS. A 3xx to any other
+    // origin (or an HTTP downgrade) could leak cookies/headers the
+    // upstream server scoped to its own origin. reqwest's built-in
+    // hop-limited policy would follow cross-origin redirects, so this
     // keeps the proxy's effective reachability aligned with
     // resolve_proxy_target's allowlist.
+    //
+    // Hop count: previous().len() equals the number of already-followed
+    // redirects, so `> MAX_REDIRECT_HOPS` stops on the 6th attempt -
+    // matching the familiar 5-hop cap without relying on the built-in
+    // policy constructor.
+    const MAX_REDIRECT_HOPS: usize = 5;
     let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= 5 {
+        if attempt.previous().len() > MAX_REDIRECT_HOPS {
             return attempt.stop();
         }
-        let host = attempt.url().host_str().unwrap_or_default();
-        let on_prod = host == PROD_HOST
-            || host.ends_with(&format!(".{}", PROD_HOST));
-        if on_prod {
+        let target = attempt.url();
+        if is_safe_proxy_redirect_target(target) {
             attempt.follow()
         } else {
             attempt.stop()
@@ -687,5 +713,60 @@ mod tests {
     #[test]
     fn denies_write_methods_on_community_manifest() {
         assert!(resolve_proxy_target(COMMUNITY_SERVERS_MANIFEST_URL, "POST").is_err());
+    }
+
+    fn parse_url(raw: &str) -> Url {
+        Url::parse(raw).unwrap()
+    }
+
+    #[test]
+    fn allows_https_redirects_to_prod_host() {
+        assert!(is_safe_proxy_redirect_target(&parse_url(
+            "https://pokemon-auto-chess.com/somewhere"
+        )));
+    }
+
+    #[test]
+    fn allows_https_redirects_to_prod_subdomain() {
+        assert!(is_safe_proxy_redirect_target(&parse_url(
+            "https://cdn.pokemon-auto-chess.com/asset"
+        )));
+    }
+
+    #[test]
+    fn blocks_http_downgrade_redirects_to_prod_host() {
+        // Even same-host downgrade to HTTP is rejected - a Set-Cookie or
+        // Authorization header on the follow-up request would travel in
+        // the clear.
+        assert!(!is_safe_proxy_redirect_target(&parse_url(
+            "http://pokemon-auto-chess.com/somewhere"
+        )));
+    }
+
+    #[test]
+    fn blocks_offorigin_https_redirects() {
+        assert!(!is_safe_proxy_redirect_target(&parse_url(
+            "https://evil.example/steal"
+        )));
+    }
+
+    #[test]
+    fn blocks_redirects_to_lookalike_domains() {
+        // Guard against a regression where ends_with("pokemon-auto-chess.com")
+        // alone would incorrectly accept evil-pokemon-auto-chess.com.
+        assert!(!is_safe_proxy_redirect_target(&parse_url(
+            "https://evil-pokemon-auto-chess.com/steal"
+        )));
+    }
+
+    #[test]
+    fn blocks_redirects_to_github_manifest_host() {
+        // The community-server manifest is proxied at a single exact URL;
+        // once resolve_proxy_target has accepted it, a 3xx follow-up from
+        // GitHub back to raw.githubusercontent.com is still a distinct
+        // request and should not count as a safe hop.
+        assert!(!is_safe_proxy_redirect_target(&parse_url(
+            "https://raw.githubusercontent.com/other/resource"
+        )));
     }
 }
