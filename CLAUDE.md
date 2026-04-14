@@ -29,6 +29,7 @@ Current native/backend source of truth:
 
 - `src-tauri/src/commands.rs` (origin-scoped HTTP proxy, updater, window mode, telemetry)
 - `src-tauri/src/performance.rs`
+- `src-tauri/src/localhost_server.rs` (in-process tiny_http server that serves `dist/` at `http://localhost:<port>` with SPA fallback)
 
 Current build source of truth:
 
@@ -39,11 +40,13 @@ Current build source of truth:
 
 ## Network Model
 
-PACDeluxe uses an origin-scoped proxy, not a path allowlist:
+PACDeluxe serves the frontend from a custom in-process HTTP server on `http://localhost:<port>` (default 37529), and uses an origin-scoped proxy for upstream calls:
 
-- the Rust proxy accepts any relative path (routes to `https://pokemon-auto-chess.com`) and any absolute URL on `pokemon-auto-chess.com` or subdomains; everything else is rejected
-- the injected JS fetch interceptor proxies everything that is not a local asset (defined by `scripts/proxy-manifest.js`)
-- new upstream API endpoints work automatically - do **not** add per-endpoint allowlists
+- `src-tauri/src/localhost_server.rs` is a tiny_http server with SPA fallback - any path not in `dist/` falls back to `dist/index.html` so React Router can own the path space. Without this the webview 500s on `/`, `/lobby`, and every client-side route.
+- Firebase accepts `localhost` (at any port) as an authorized OAuth domain; `tauri.localhost` (the default Tauri origin) is not.
+- the Rust proxy in `commands.rs` accepts any relative path (routes to `https://pokemon-auto-chess.com`) and any absolute URL on `pokemon-auto-chess.com` or subdomains; everything else is rejected.
+- the injected JS fetch interceptor proxies everything that is not a local asset (defined by `scripts/proxy-manifest.js`) and skips entirely on non-localhost origins (so it does not run on `accounts.google.com` during the OAuth redirect flow).
+- new upstream API endpoints work automatically - do **not** add per-endpoint allowlists.
 
 Firebase popup auth flows through a bidirectional bridge:
 

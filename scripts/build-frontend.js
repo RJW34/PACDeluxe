@@ -401,19 +401,31 @@ function applyUpstreamPatches() {
       log(`Applied upstream patch: ${getPatchMeta('login-signin-flow').id}`);
     }
 
+    // Return to our local origin ROOT (not /lobby). tauri-plugin-localhost
+    // is a plain static file server: it responds for paths that map to
+    // files in dist/ and silently drops requests for anything else
+    // (including SPA routes like /lobby that only exist client-side via
+    // React Router). Landing on `/` serves dist/index.html, React mounts,
+    // Firebase's getRedirectResult picks up the auth, onAuthStateChanged
+    // fires, and upstream's login.tsx re-renders to the authenticated
+    // state. The user then navigates to /lobby via client-side routing
+    // which never hits the plugin.
     if (loginContent.includes('signInSuccessUrl: window.location.href + "lobby"')) {
       loginContent = loginContent.replace(
         'signInSuccessUrl: window.location.href + "lobby"',
-        'signInSuccessUrl: window.location.origin + "/lobby"'
+        'signInSuccessUrl: window.location.origin + "/"'
       );
       log(`Applied upstream patch: ${getPatchMeta('login-success-url').id}`);
+    } else if (loginContent.includes('signInSuccessUrl: window.location.origin + "/lobby"')) {
+      loginContent = loginContent.replace(
+        'signInSuccessUrl: window.location.origin + "/lobby"',
+        'signInSuccessUrl: window.location.origin + "/"'
+      );
+      log(`Applied upstream patch: ${getPatchMeta('login-success-url').id} (re-target to root)`);
     } else if (loginContent.includes('signInSuccessUrl: "https://pokemon-auto-chess.com/lobby"')) {
-      // Previous PACDeluxe versions hard-coded the production URL; rewrite
-      // back to a same-origin dynamic expression so redirect flow returns
-      // to our local app.
       loginContent = loginContent.replace(
         'signInSuccessUrl: "https://pokemon-auto-chess.com/lobby"',
-        'signInSuccessUrl: window.location.origin + "/lobby"'
+        'signInSuccessUrl: window.location.origin + "/"'
       );
       log(`Applied upstream patch: ${getPatchMeta('login-success-url').id} (rewrite)`);
     }

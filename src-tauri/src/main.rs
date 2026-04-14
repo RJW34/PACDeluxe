@@ -3,6 +3,7 @@
 
 mod performance;
 mod commands;
+mod localhost_server;
 
 use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri::webview::NewWindowResponse;
@@ -211,6 +212,20 @@ const AUTH_POPUP_BRIDGE_SCRIPT: &str = r#"
 /// This is the canonical frontend runtime for PACDeluxe.
 const OVERLAY_SCRIPT: &str = r#"
 (function() {
+    // Skip on cross-origin pages. on_page_load fires for every navigation
+    // in the main webview, including cross-origin hops during Firebase
+    // redirect auth (accounts.google.com, <project>.firebaseapp.com). Our
+    // overlay installs a fetch interceptor that routes non-local requests
+    // through the Rust proxy - running that on Google's auth page would
+    // misroute Google's own fetches and break the login UI. The app's
+    // own origin is always http://localhost:<port> (see
+    // tauri-plugin-localhost setup in main.rs), so hostname === 'localhost'
+    // identifies our pages uniquely.
+    if (window.location.hostname !== 'localhost') {
+        console.log('[PACDeluxe] Overlay skipped on external origin:', window.location.origin);
+        return;
+    }
+
     // Wait for body to exist
     function init() {
         if (!document.body) {
@@ -1231,21 +1246,6 @@ const OVERLAY_SCRIPT: &str = r#"
 })();
 "#;
 
-/// Resolve the local HTTP port for the in-process `tauri-plugin-localhost`
-/// server. We prefer a fixed port so that the webview's origin
-/// (`http://localhost:<PORT>`) is stable across sessions - changing the port
-/// would reset cookies, IndexedDB, and localStorage every restart. If the
-/// preferred port is taken we fall back to any free port rather than failing
-/// to launch; the app then gets a fresh storage partition that session.
-fn pick_localhost_port() -> u16 {
-    const PREFERRED: u16 = 37529;
-    if std::net::TcpListener::bind(("127.0.0.1", PREFERRED)).is_ok() {
-        PREFERRED
-    } else {
-        portpicker::pick_unused_port().unwrap_or(PREFERRED)
-    }
-}
-
 fn main() {
     // Initialize logging
     let subscriber = FmtSubscriber::builder()
@@ -1255,13 +1255,12 @@ fn main() {
 
     info!("Starting PACDeluxe");
 
-    // Pick the port before building Tauri so the plugin and the main
-    // window both agree on it. Firebase's OAuth flow requires an
-    // authorized origin - the PAC Firebase project accepts `localhost`
-    // at any port, but not `tauri.localhost` (the default Tauri origin
-    // on Windows/Linux).
-    let localhost_port = pick_localhost_port();
-    info!("Serving frontend on http://localhost:{}", localhost_port);
+    // Pick the port BEFORE Tauri builds so the main window URL is
+    // resolved before setup() fires. The server itself starts inside
+    // setup() where we have access to the AppHandle and its
+    // AssetResolver (which works for both dev and release builds).
+    let localhost_port = localhost_server::pick_localhost_port();
+    info!("Reserving localhost port {} for the frontend server", localhost_port);
 
     // Set WebView2 Chromium flags for real GPU performance gains
     // Must be set before any WebView2 instance is created
@@ -1283,15 +1282,24 @@ fn main() {
     performance::apply_system_optimizations();
 
     tauri::Builder::default()
-        // Serve dist/ over a local HTTP server so the webview origin is
-        // `http://localhost:<port>` - an authorized Firebase domain that
-        // lets OAuth popup sign-in complete normally.
-        .plugin(tauri_plugin_localhost::Builder::new(localhost_port).build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(move |app| {
             let app_handle = app.handle().clone();
+
+            // Start our static HTTP server on the localhost port picked
+            // earlier. Must happen BEFORE we create the main window so
+            // the webview's first navigation finds a live server.
+            // Firebase's OAuth flow requires an authorized origin - the
+            // PAC Firebase project accepts `localhost` at any port, but
+            // not `tauri.localhost` (the default Tauri origin on
+            // Windows/Linux).
+            if let Err(e) =
+                localhost_server::spawn(localhost_port, app_handle.clone())
+            {
+                warn!("Failed to start localhost server: {}", e);
+            }
 
             // Get version for window title (add Dev suffix in debug builds)
             let version = app.package_info().version.to_string();

@@ -33,7 +33,7 @@ export const UPSTREAM_PATCHES = [
   {
     id: 'login-success-url',
     file: 'app/public/src/pages/component/auth/login.tsx',
-    summary: 'Points Firebase auth success redirect back to the local-build origin via `window.location.origin + "/lobby"`.',
+    summary: 'Points Firebase auth success redirect back to the local-build origin root (window.location.origin + "/"). The root path serves dist/index.html; returning to /lobby would 404/hang on tauri-plugin-localhost which has no SPA fallback.',
   },
   {
     id: 'anonymous-login-redirect',
