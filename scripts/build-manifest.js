@@ -31,6 +31,11 @@ export const UPSTREAM_PATCHES = [
     summary: 'Switches Firebase auth from popup to redirect flow so OAuth works inside WebView2 without iframe<->popup postMessage plumbing.',
   },
   {
+    id: 'login-no-redirect-after-auth',
+    file: 'app/public/src/pages/component/auth/login.tsx',
+    summary: 'Returns false from FirebaseUI signInSuccessWithAuthResult so it does not re-navigate to signInSuccessUrl after a successful redirect-flow sign-in. Same-URL re-navigation would reload and interrupt Firebase IndexedDB auth persist, bouncing the user back to login.',
+  },
+  {
     id: 'login-success-url',
     file: 'app/public/src/pages/component/auth/login.tsx',
     summary: 'Points Firebase auth success redirect back to the local-build origin root (window.location.origin + "/"). The root path serves dist/index.html; returning to /lobby would 404/hang on tauri-plugin-localhost which has no SPA fallback.',

@@ -401,6 +401,22 @@ function applyUpstreamPatches() {
       log(`Applied upstream patch: ${getPatchMeta('login-signin-flow').id}`);
     }
 
+    // Under redirect flow, returning `true` makes FirebaseUI call
+    // window.location.assign(signInSuccessUrl) after auth - same URL we
+    // just arrived at, so Chromium treats it as a reload. The reload
+    // interrupts Firebase's async IndexedDB persist of the auth state,
+    // so on reload there's no user, and the user sees a white flash
+    // and bounces back to the login page. Returning `false` keeps us
+    // on the current page; React already has the auth state via
+    // onAuthStateChanged and re-renders into the authenticated UI.
+    if (loginContent.includes('signInSuccessWithAuthResult: () => true')) {
+      loginContent = loginContent.replace(
+        'signInSuccessWithAuthResult: () => true',
+        'signInSuccessWithAuthResult: () => false'
+      );
+      log(`Applied upstream patch: ${getPatchMeta('login-no-redirect-after-auth').id}`);
+    }
+
     // Return to our local origin ROOT (not /lobby). tauri-plugin-localhost
     // is a plain static file server: it responds for paths that map to
     // files in dist/ and silently drops requests for anything else
