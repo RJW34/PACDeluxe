@@ -17,36 +17,88 @@
 //!   - falls back to `index.html` for any path the resolver can't find,
 //!     so React Router owns the whole path space client-side
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 
 use tauri::{AppHandle, Runtime};
 use tiny_http::{Header, Method, Response, Server};
 use tracing::{debug, info, warn};
 
-/// Pick a stable preferred port so the webview origin
-/// (`http://localhost:<port>`) is the same across sessions and cookies /
-/// IndexedDB / localStorage all persist. Fall back to any free port only
-/// if the preferred one is taken.
-pub fn pick_localhost_port() -> u16 {
-    const PREFERRED: u16 = 37529;
-    if std::net::TcpListener::bind(("::1", PREFERRED)).is_ok() {
-        PREFERRED
-    } else {
-        portpicker::pick_unused_port().unwrap_or(PREFERRED)
+const PREFERRED_LOCALHOST_PORT: u16 = 37529;
+
+/// Start the localhost server, preferring a stable port for persisted auth
+/// state but falling back to another free port when that one is unavailable.
+/// Returns the actual bound port.
+pub fn spawn<R: Runtime>(app: AppHandle<R>) -> Result<u16, String> {
+    let mut bind_errors = Vec::new();
+
+    match bind_server(PREFERRED_LOCALHOST_PORT) {
+        Ok((server, port)) => return spawn_bound_server(server, port, app),
+        Err(error) => {
+            warn!(
+                "Preferred localhost port {} unavailable: {}",
+                PREFERRED_LOCALHOST_PORT, error
+            );
+            bind_errors.push(error);
+        }
+    }
+
+    if let Some(fallback_port) =
+        portpicker::pick_unused_port().filter(|port| *port != PREFERRED_LOCALHOST_PORT)
+    {
+        match bind_server(fallback_port) {
+            Ok((server, port)) => return spawn_bound_server(server, port, app),
+            Err(error) => {
+                warn!(
+                    "Fallback localhost port {} unavailable: {}",
+                    fallback_port, error
+                );
+                bind_errors.push(error);
+            }
+        }
+    }
+
+    match bind_server(0) {
+        Ok((server, port)) => spawn_bound_server(server, port, app),
+        Err(error) => {
+            bind_errors.push(error);
+            Err(format!(
+                "failed to start localhost server after exhausting preferred and fallback ports: {}",
+                bind_errors.join(" | ")
+            ))
+        }
     }
 }
 
-/// Start the server on `port`, serving assets via Tauri's resolver.
-/// Serving happens on a background thread; the caller only blocks while
-/// the listener binds.
-pub fn spawn<R: Runtime>(port: u16, app: AppHandle<R>) -> Result<(), String> {
+fn bind_server(port: u16) -> Result<(Server, u16), String> {
+    let listener = TcpListener::bind(("::1", port))
+        .map_err(|e| format!("failed to bind [::1]:{}: {}", port, e))?;
+    let bound_port = listener
+        .local_addr()
+        .map_err(|e| {
+            format!(
+                "failed to inspect localhost listener on [::1]:{}: {}",
+                port, e
+            )
+        })?
+        .port();
+    let server = Server::from_listener(listener, None)
+        .map_err(|e| format!("failed to start HTTP server on [::1]:{}: {}", bound_port, e))?;
+    Ok((server, bound_port))
+}
+
+fn spawn_bound_server<R: Runtime>(
+    server: Server,
+    port: u16,
+    app: AppHandle<R>,
+) -> Result<u16, String> {
     let addr: SocketAddr = format!("[::1]:{}", port)
         .parse()
         .map_err(|e| format!("invalid localhost address: {}", e))?;
-    let server = Server::http(addr)
-        .map_err(|e| format!("failed to bind localhost server on {}: {}", addr, e))?;
 
-    info!("Localhost server listening on http://[::1]:{}", port);
+    info!(
+        "Localhost server listening on http://localhost:{} ({})",
+        port, addr
+    );
 
     std::thread::spawn(move || {
         for request in server.incoming_requests() {
@@ -54,7 +106,7 @@ pub fn spawn<R: Runtime>(port: u16, app: AppHandle<R>) -> Result<(), String> {
         }
     });
 
-    Ok(())
+    Ok(port)
 }
 
 fn handle<R: Runtime>(request: tiny_http::Request, app: &AppHandle<R>) {
@@ -88,11 +140,8 @@ fn handle<R: Runtime>(request: tiny_http::Request, app: &AppHandle<R>) {
                 asset.bytes.len(),
                 asset.mime_type
             );
-            let content_type = Header::from_bytes(
-                &b"Content-Type"[..],
-                asset.mime_type.as_bytes(),
-            )
-            .unwrap();
+            let content_type =
+                Header::from_bytes(&b"Content-Type"[..], asset.mime_type.as_bytes()).unwrap();
             let cache_control =
                 Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap();
             let content_length = asset.bytes.len();
@@ -178,7 +227,10 @@ mod tests {
     #[test]
     fn simple_paths_keep_their_shape() {
         assert_eq!(normalize_asset_key("/index.js"), "/index.js");
-        assert_eq!(normalize_asset_key("/assets/ui/favicon.ico"), "/assets/ui/favicon.ico");
+        assert_eq!(
+            normalize_asset_key("/assets/ui/favicon.ico"),
+            "/assets/ui/favicon.ico"
+        );
     }
 
     #[test]

@@ -1,18 +1,21 @@
 // Windows subsystem - no console in release (Windows only)
-#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 
-mod performance;
 mod commands;
 mod localhost_server;
+mod performance;
 
-use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
-use tauri::webview::NewWindowResponse;
-use tracing::{info, debug, warn, Level};
-use tracing_subscriber::FmtSubscriber;
-use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::path::PathBuf;
+use tauri::webview::NewWindowResponse;
+use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tracing::{debug, info, warn, Level};
+use tracing_subscriber::FmtSubscriber;
 
 /// Clean up problematic files from old installations (Windows)
 /// Runs on every startup to ensure clean state
@@ -76,7 +79,11 @@ fn cleanup_old_installation() {
     }
 
     if !cleaned.is_empty() {
-        info!("Cleaned up {} old installation artifacts: {:?}", cleaned.len(), cleaned);
+        info!(
+            "Cleaned up {} old installation artifacts: {:?}",
+            cleaned.len(),
+            cleaned
+        );
     } else {
         debug!("No old installation artifacts to clean up");
     }
@@ -130,7 +137,11 @@ fn cleanup_old_installation() {
     }
 
     if !cleaned.is_empty() {
-        info!("Cleaned up {} old installation artifacts: {:?}", cleaned.len(), cleaned);
+        info!(
+            "Cleaned up {} old installation artifacts: {:?}",
+            cleaned.len(),
+            cleaned
+        );
     } else {
         debug!("No old installation artifacts to clean up");
     }
@@ -1249,18 +1260,18 @@ const OVERLAY_SCRIPT: &str = r#"
 fn main() {
     // Initialize logging
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(if cfg!(debug_assertions) { Level::DEBUG } else { Level::INFO })
+        .with_max_level(if cfg!(debug_assertions) {
+            Level::DEBUG
+        } else {
+            Level::INFO
+        })
         .finish();
     tracing::subscriber::set_global_default(subscriber).ok();
 
     info!("Starting PACDeluxe");
 
-    // Pick the port BEFORE Tauri builds so the main window URL is
-    // resolved before setup() fires. The server itself starts inside
-    // setup() where we have access to the AppHandle and its
-    // AssetResolver (which works for both dev and release builds).
-    let localhost_port = localhost_server::pick_localhost_port();
-    info!("Reserving localhost port {} for the frontend server", localhost_port);
+    // The localhost server is started inside setup() so the main window only
+    // opens after we have a real bound port and a live asset server.
 
     // Set WebView2 Chromium flags for real GPU performance gains
     // Must be set before any WebView2 instance is created
@@ -1288,18 +1299,17 @@ fn main() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
-            // Start our static HTTP server on the localhost port picked
-            // earlier. Must happen BEFORE we create the main window so
-            // the webview's first navigation finds a live server.
-            // Firebase's OAuth flow requires an authorized origin - the
-            // PAC Firebase project accepts `localhost` at any port, but
-            // not `tauri.localhost` (the default Tauri origin on
-            // Windows/Linux).
-            if let Err(e) =
-                localhost_server::spawn(localhost_port, app_handle.clone())
-            {
-                warn!("Failed to start localhost server: {}", e);
-            }
+            // Start our static HTTP server before creating the main window so
+            // the first navigation always targets a live localhost origin.
+            // Firebase accepts `localhost` (any port) as an authorized origin,
+            // but not Tauri's default `tauri.localhost` origin.
+            let localhost_port = localhost_server::spawn(app_handle.clone()).map_err(|e| {
+                std::io::Error::other(format!("Failed to start localhost server: {}", e))
+            })?;
+            info!(
+                "Frontend runtime bound to http://localhost:{}/",
+                localhost_port
+            );
 
             // Get version for window title (add Dev suffix in debug builds)
             let version = app.package_info().version.to_string();
@@ -1316,179 +1326,190 @@ fn main() {
             let main_url = format!("http://localhost:{}/", localhost_port)
                 .parse()
                 .expect("localhost URL must parse");
-            let window = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(main_url)
-            )
-            .title(&title)
-            .inner_size(1280.0, 900.0)
-            .min_inner_size(1024.0, 768.0)
-            .resizable(true)
-            .center()
-            .focused(true)
-            .visible(true)
-            // Required for HTML5 drag & drop to work in WebView2 on Windows
-            // (Tauri's default handler intercepts drag events, blocking tier list maker etc.)
-            .disable_drag_drop_handler()
-            .on_page_load(|webview, _payload| {
-                if let Err(e) = webview.eval(OVERLAY_SCRIPT) {
-                    tracing::warn!("Failed to inject overlay script: {}", e);
-                } else {
-                    tracing::debug!("Overlay script injected successfully");
-                }
-            })
-            // Handle OAuth popup windows (Google/Firebase auth)
-            .on_new_window(move |url, features| {
-                let popup_id = POPUP_COUNTER.fetch_add(1, Ordering::SeqCst);
-                let label = format!("auth-popup-{}", popup_id);
-                debug!("Opening popup window: {} -> {}", label, url);
-
-                // Shared state for popup lifecycle management
-                let auth_completed = Arc::new(AtomicBool::new(false));
-                let popup_closed = Arc::new(AtomicBool::new(false));
-                let popup_start = Instant::now();
-
-                // Clone handles for various closures
-                let app_for_nav = app_handle.clone();
-                let label_for_nav = label.clone();
-                let auth_completed_nav = auth_completed.clone();
-                let popup_closed_nav = popup_closed.clone();
-
-                let app_for_timeout = app_handle.clone();
-                let label_for_timeout = label.clone();
-                let auth_completed_timeout = auth_completed.clone();
-                let popup_closed_timeout = popup_closed.clone();
-
-                let popup = WebviewWindowBuilder::new(
-                    &app_handle,
-                    &label,
-                    WebviewUrl::External(url.clone()),
-                )
-                .title(url.host_str().unwrap_or("Authentication"))
-                .window_features(features)
-                .inner_size(500.0, 600.0)
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(main_url))
+                .title(&title)
+                .inner_size(1280.0, 900.0)
+                .min_inner_size(1024.0, 768.0)
+                .resizable(true)
                 .center()
                 .focused(true)
-                .always_on_top(true)
-                // Mock window.opener so Firebase's popup auth can bridge results
-                // back to the main window via Tauri events
-                .initialization_script(AUTH_POPUP_BRIDGE_SCRIPT)
-                // Detect auth completion via navigation events (fires before page load)
-                .on_navigation(move |nav_url| {
-                    let url_str = nav_url.to_string();
-                    debug!("Auth popup navigating to: {}", url_str);
-
-                    // Firebase auth callback patterns:
-                    // - /__/auth/handler?code=... (OAuth success)
-                    // - /__/auth/handler?error=... (OAuth error/cancel)
-                    let is_auth_callback = url_str.contains("/__/auth/handler");
-                    let has_code = url_str.contains("code=");
-                    let has_error = url_str.contains("error=");
-
-                    if is_auth_callback && (has_code || has_error) {
-                        if has_code {
-                            debug!("Auth success detected, scheduling popup close");
-                        } else {
-                            debug!("Auth cancelled/error detected, scheduling popup close");
-                        }
-
-                        // Mark auth as completed
-                        auth_completed_nav.store(true, Ordering::SeqCst);
-
-                        // Close popup after a brief delay to allow redirect to complete
-                        if !popup_closed_nav.swap(true, Ordering::SeqCst) {
-                            let app = app_for_nav.clone();
-                            let label = label_for_nav.clone();
-                            std::thread::spawn(move || {
-                                // Wait for Firebase handler page to load, process
-                                // the OAuth code, and call postMessage (our mock
-                                // bridges it to the main window via Tauri events)
-                                std::thread::sleep(Duration::from_millis(3000));
-                                if let Some(win) = app.get_webview_window(&label) {
-                                    match win.close() {
-                                        Ok(_) => debug!("Auth popup {} closed successfully", label),
-                                        Err(e) => warn!("Failed to close auth popup {}: {}", label, e),
-                                    }
-                                }
-                            });
-                        }
+                .visible(true)
+                // Required for HTML5 drag & drop to work in WebView2 on Windows
+                // (Tauri's default handler intercepts drag events, blocking tier list maker etc.)
+                .disable_drag_drop_handler()
+                .on_page_load(|webview, _payload| {
+                    if let Err(e) = webview.eval(OVERLAY_SCRIPT) {
+                        tracing::warn!("Failed to inject overlay script: {}", e);
+                    } else {
+                        tracing::debug!("Overlay script injected successfully");
                     }
-
-                    true // Allow all navigation
                 })
-                .on_page_load(move |_webview, payload| {
-                    debug!("Auth popup page loaded: {}", payload.url());
-                })
-                .build();
+                // Handle OAuth popup windows (Google/Firebase auth)
+                .on_new_window(move |url, features| {
+                    let popup_id = POPUP_COUNTER.fetch_add(1, Ordering::SeqCst);
+                    let label = format!("auth-popup-{}", popup_id);
+                    debug!("Opening popup window: {} -> {}", label, url);
 
-                match popup {
-                    Ok(window) => {
-                        // Notify the main window when the popup is destroyed
-                        // so the JS-side mock can mark its `closed` flag.
-                        // Firebase polls popup.closed to detect user
-                        // cancellation of the auth flow.
-                        let app_for_close = app_handle.clone();
-                        let label_for_close = label.clone();
-                        let popup_closed_event = popup_closed.clone();
-                        window.on_window_event(move |event| {
-                            if let WindowEvent::Destroyed = event {
-                                popup_closed_event.store(true, Ordering::SeqCst);
-                                let _ = app_for_close.emit(
-                                    "pac-popup-closed",
-                                    serde_json::json!({ "label": label_for_close }),
-                                );
-                                debug!("Auth popup {} destroyed, notified main", label_for_close);
+                    // Shared state for popup lifecycle management
+                    let auth_completed = Arc::new(AtomicBool::new(false));
+                    let popup_closed = Arc::new(AtomicBool::new(false));
+                    let popup_start = Instant::now();
+
+                    // Clone handles for various closures
+                    let app_for_nav = app_handle.clone();
+                    let label_for_nav = label.clone();
+                    let auth_completed_nav = auth_completed.clone();
+                    let popup_closed_nav = popup_closed.clone();
+
+                    let app_for_timeout = app_handle.clone();
+                    let label_for_timeout = label.clone();
+                    let auth_completed_timeout = auth_completed.clone();
+                    let popup_closed_timeout = popup_closed.clone();
+
+                    let popup = WebviewWindowBuilder::new(
+                        &app_handle,
+                        &label,
+                        WebviewUrl::External(url.clone()),
+                    )
+                    .title(url.host_str().unwrap_or("Authentication"))
+                    .window_features(features)
+                    .inner_size(500.0, 600.0)
+                    .center()
+                    .focused(true)
+                    .always_on_top(true)
+                    // Mock window.opener so Firebase's popup auth can bridge results
+                    // back to the main window via Tauri events
+                    .initialization_script(AUTH_POPUP_BRIDGE_SCRIPT)
+                    // Detect auth completion via navigation events (fires before page load)
+                    .on_navigation(move |nav_url| {
+                        let url_str = nav_url.to_string();
+                        debug!("Auth popup navigating to: {}", url_str);
+
+                        // Firebase auth callback patterns:
+                        // - /__/auth/handler?code=... (OAuth success)
+                        // - /__/auth/handler?error=... (OAuth error/cancel)
+                        let is_auth_callback = url_str.contains("/__/auth/handler");
+                        let has_code = url_str.contains("code=");
+                        let has_error = url_str.contains("error=");
+
+                        if is_auth_callback && (has_code || has_error) {
+                            if has_code {
+                                debug!("Auth success detected, scheduling popup close");
+                            } else {
+                                debug!("Auth cancelled/error detected, scheduling popup close");
                             }
-                        });
 
-                        // Start timeout watchdog thread to prevent orphaned popups
-                        std::thread::spawn(move || {
-                            const POPUP_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
-                            const CHECK_INTERVAL: Duration = Duration::from_secs(10);
+                            // Mark auth as completed
+                            auth_completed_nav.store(true, Ordering::SeqCst);
 
-                            loop {
-                                std::thread::sleep(CHECK_INTERVAL);
-
-                                // Exit if popup already closed or auth completed
-                                if popup_closed_timeout.load(Ordering::SeqCst) {
-                                    debug!("Popup timeout watchdog: popup already closed");
-                                    break;
-                                }
-
-                                if auth_completed_timeout.load(Ordering::SeqCst) {
-                                    debug!("Popup timeout watchdog: auth completed normally");
-                                    break;
-                                }
-
-                                // Check if timeout exceeded
-                                if popup_start.elapsed() >= POPUP_TIMEOUT {
-                                    warn!("Auth popup {} timed out after {:?}, force closing",
-                                          label_for_timeout, popup_start.elapsed());
-
-                                    if !popup_closed_timeout.swap(true, Ordering::SeqCst) {
-                                        if let Some(win) = app_for_timeout.get_webview_window(&label_for_timeout) {
-                                            match win.close() {
-                                                Ok(_) => info!("Orphaned auth popup closed"),
-                                                Err(e) => warn!("Failed to close orphaned popup: {}", e),
+                            // Close popup after a brief delay to allow redirect to complete
+                            if !popup_closed_nav.swap(true, Ordering::SeqCst) {
+                                let app = app_for_nav.clone();
+                                let label = label_for_nav.clone();
+                                std::thread::spawn(move || {
+                                    // Wait for Firebase handler page to load, process
+                                    // the OAuth code, and call postMessage (our mock
+                                    // bridges it to the main window via Tauri events)
+                                    std::thread::sleep(Duration::from_millis(3000));
+                                    if let Some(win) = app.get_webview_window(&label) {
+                                        match win.close() {
+                                            Ok(_) => {
+                                                debug!("Auth popup {} closed successfully", label)
+                                            }
+                                            Err(e) => {
+                                                warn!("Failed to close auth popup {}: {}", label, e)
                                             }
                                         }
                                     }
-                                    break;
-                                }
+                                });
                             }
-                        });
+                        }
 
-                        NewWindowResponse::Create { window }
-                    },
-                    Err(e) => {
-                        warn!("Failed to create auth popup: {}", e);
-                        NewWindowResponse::Deny
+                        true // Allow all navigation
+                    })
+                    .on_page_load(move |_webview, payload| {
+                        debug!("Auth popup page loaded: {}", payload.url());
+                    })
+                    .build();
+
+                    match popup {
+                        Ok(window) => {
+                            // Notify the main window when the popup is destroyed
+                            // so the JS-side mock can mark its `closed` flag.
+                            // Firebase polls popup.closed to detect user
+                            // cancellation of the auth flow.
+                            let app_for_close = app_handle.clone();
+                            let label_for_close = label.clone();
+                            let popup_closed_event = popup_closed.clone();
+                            window.on_window_event(move |event| {
+                                if let WindowEvent::Destroyed = event {
+                                    popup_closed_event.store(true, Ordering::SeqCst);
+                                    let _ = app_for_close.emit(
+                                        "pac-popup-closed",
+                                        serde_json::json!({ "label": label_for_close }),
+                                    );
+                                    debug!(
+                                        "Auth popup {} destroyed, notified main",
+                                        label_for_close
+                                    );
+                                }
+                            });
+
+                            // Start timeout watchdog thread to prevent orphaned popups
+                            std::thread::spawn(move || {
+                                const POPUP_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+                                const CHECK_INTERVAL: Duration = Duration::from_secs(10);
+
+                                loop {
+                                    std::thread::sleep(CHECK_INTERVAL);
+
+                                    // Exit if popup already closed or auth completed
+                                    if popup_closed_timeout.load(Ordering::SeqCst) {
+                                        debug!("Popup timeout watchdog: popup already closed");
+                                        break;
+                                    }
+
+                                    if auth_completed_timeout.load(Ordering::SeqCst) {
+                                        debug!("Popup timeout watchdog: auth completed normally");
+                                        break;
+                                    }
+
+                                    // Check if timeout exceeded
+                                    if popup_start.elapsed() >= POPUP_TIMEOUT {
+                                        warn!(
+                                            "Auth popup {} timed out after {:?}, force closing",
+                                            label_for_timeout,
+                                            popup_start.elapsed()
+                                        );
+
+                                        if !popup_closed_timeout.swap(true, Ordering::SeqCst) {
+                                            if let Some(win) = app_for_timeout
+                                                .get_webview_window(&label_for_timeout)
+                                            {
+                                                match win.close() {
+                                                    Ok(_) => info!("Orphaned auth popup closed"),
+                                                    Err(e) => warn!(
+                                                        "Failed to close orphaned popup: {}",
+                                                        e
+                                                    ),
+                                                }
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            });
+
+                            NewWindowResponse::Create { window }
+                        }
+                        Err(e) => {
+                            warn!("Failed to create auth popup: {}", e);
+                            NewWindowResponse::Deny
+                        }
                     }
-                }
-            })
-            .build()
-            .expect("Failed to create main window");
+                })
+                .build()
+                .expect("Failed to create main window");
 
             // Apply window optimizations
             performance::optimize_window(&window);

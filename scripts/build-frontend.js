@@ -449,20 +449,28 @@ function applyUpstreamPatches() {
     writeFileSync(LOGIN_FILE, loginContent);
   }
 
-  // === PATCH 5: Fix anonymous login redirect for local serving ===
-  // anonymous-button.tsx uses window.location.href + "lobby" which breaks under tauri://
+  // === PATCH 5: Keep anonymous-login redirect inside the localhost runtime ===
+  // Guest login must stay on our current localhost origin so the native overlay,
+  // proxy, IndexedDB auth state, and SPA routing all remain active after login.
   if (existsSync(ANONYMOUS_BUTTON_FILE)) {
     let anonContent = readFileSync(ANONYMOUS_BUTTON_FILE, 'utf-8')
       .replace(/\r\n/g, '\n');
-    if (!anonContent.includes('"https://pokemon-auto-chess.com/lobby"')) {
+    const localLobbyRedirect = 'window.location.href = window.location.origin + "/lobby"';
+    if (!anonContent.includes(localLobbyRedirect)) {
       if (anonContent.includes('window.location.href = window.location.href + "lobby"')) {
         anonContent = anonContent.replace(
           'window.location.href = window.location.href + "lobby"',
-          'window.location.href = "https://pokemon-auto-chess.com/lobby"'
+          localLobbyRedirect
         );
-        writeFileSync(ANONYMOUS_BUTTON_FILE, anonContent);
-        log(`Applied upstream patch: ${getPatchMeta('anonymous-login-redirect').id}`);
+        log(`Applied upstream patch: ${getPatchMeta('anonymous-login-redirect').id} (local lobby redirect)`);
+      } else if (anonContent.includes('window.location.href = "https://pokemon-auto-chess.com/lobby"')) {
+        anonContent = anonContent.replace(
+          'window.location.href = "https://pokemon-auto-chess.com/lobby"',
+          localLobbyRedirect
+        );
+        log(`Applied upstream patch: ${getPatchMeta('anonymous-login-redirect').id} (undo live-site escape)`);
       }
+      writeFileSync(ANONYMOUS_BUTTON_FILE, anonContent);
     }
   }
 

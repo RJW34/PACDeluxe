@@ -4,19 +4,18 @@
 //! No game state access.
 
 use crate::performance::{
-    PerformanceMonitor, PerformanceStats, ElevationTelemetry, get_elevation_telemetry,
-    GpuStats, get_gpu_stats as get_gpu_stats_impl,
-    HdrInfo, get_hdr_info,
+    get_elevation_telemetry, get_gpu_stats as get_gpu_stats_impl, get_hdr_info, ElevationTelemetry,
+    GpuStats, HdrInfo, PerformanceMonitor, PerformanceStats,
 };
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Method, Url,
 };
-use serde::{Serialize, Deserialize};
-use tauri::{State, Manager, AppHandle, Emitter};
-use tauri_plugin_updater::UpdaterExt;
-use tracing::{debug, warn, info};
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Mutex, time::Duration};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_updater::UpdaterExt;
+use tracing::{debug, info, warn};
 
 /// Window display mode
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -215,7 +214,10 @@ pub async fn proxy_http_request(request: ProxyHttpRequest) -> Result<ProxyHttpRe
     }
 
     let response = builder.send().await.map_err(|e| {
-        warn!("Proxy request failed for {} {}: {}", reqwest_method, target, e);
+        warn!(
+            "Proxy request failed for {} {}: {}",
+            reqwest_method, target, e
+        );
         format!("Proxy request failed: {}", e)
     })?;
 
@@ -261,7 +263,10 @@ pub async fn get_performance_stats(
     monitor: State<'_, PerformanceMonitor>,
 ) -> Result<PerformanceStats, String> {
     let stats = monitor.get_stats();
-    debug!("Performance stats: CPU={:.1}%, MEM={}MB", stats.cpu_usage, stats.memory_usage_mb);
+    debug!(
+        "Performance stats: CPU={:.1}%, MEM={}MB",
+        stats.cpu_usage, stats.memory_usage_mb
+    );
     Ok(stats)
 }
 
@@ -283,21 +288,31 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
         gpu_name: gpu_name.clone(),
     };
 
-    debug!("System info: {} cores, {}MB RAM, GPU: {:?}",
-           info.cpu_cores, info.total_memory_mb, gpu_name);
+    debug!(
+        "System info: {} cores, {}MB RAM, GPU: {:?}",
+        info.cpu_cores, info.total_memory_mb, gpu_name
+    );
     Ok(info)
 }
 
 /// Get the operating system name
 fn get_os_name() -> String {
     #[cfg(target_os = "windows")]
-    { "Windows".to_string() }
+    {
+        "Windows".to_string()
+    }
     #[cfg(target_os = "linux")]
-    { "Linux".to_string() }
+    {
+        "Linux".to_string()
+    }
     #[cfg(target_os = "macos")]
-    { "macOS".to_string() }
+    {
+        "macOS".to_string()
+    }
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    { "Unknown".to_string() }
+    {
+        "Unknown".to_string()
+    }
 }
 
 /// Detect GPU name (Windows - via DXGI)
@@ -311,7 +326,9 @@ fn detect_gpu() -> Option<String> {
                 let mut i = 0u32;
                 while let Ok(adapter) = factory.EnumAdapters1(i) {
                     if let Ok(desc) = adapter.GetDesc1() {
-                        let name: String = desc.Description.iter()
+                        let name: String = desc
+                            .Description
+                            .iter()
                             .take_while(|&&c| c != 0)
                             .map(|&c| char::from_u32(c as u32).unwrap_or('?'))
                             .collect();
@@ -376,11 +393,10 @@ pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
     debug!("Toggle fullscreen requested");
     use std::sync::atomic::Ordering;
 
-    let window = app.get_webview_window("main")
-        .ok_or_else(|| {
-            warn!("Main window not found for fullscreen toggle");
-            "Main window not found".to_string()
-        })?;
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        warn!("Main window not found for fullscreen toggle");
+        "Main window not found".to_string()
+    })?;
 
     let current_mode = WindowMode::from_u8(CURRENT_WINDOW_MODE.load(Ordering::SeqCst));
 
@@ -451,11 +467,10 @@ pub async fn set_window_mode(app: AppHandle, mode: WindowMode) -> Result<WindowM
     debug!("Setting window mode to {:?}", mode);
     use std::sync::atomic::Ordering;
 
-    let window = app.get_webview_window("main")
-        .ok_or_else(|| {
-            warn!("Main window not found for window mode change");
-            "Main window not found".to_string()
-        })?;
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        warn!("Main window not found for window mode change");
+        "Main window not found".to_string()
+    })?;
 
     let current_mode = WindowMode::from_u8(CURRENT_WINDOW_MODE.load(Ordering::SeqCst));
 
@@ -584,20 +599,29 @@ pub async fn install_update(
 ) -> Result<(), String> {
     info!("Installing update...");
 
-    let update = pending.0.lock().unwrap().take()
+    let update = pending
+        .0
+        .lock()
+        .unwrap()
+        .take()
         .ok_or_else(|| "No pending update to install".to_string())?;
 
     // Download and install with progress reporting via Tauri events
     let app_handle = app.clone();
-    update.download_and_install(
-        move |chunk_length, total_size| {
-            let _ = app_handle.emit("update-progress", serde_json::json!({
-                "chunk": chunk_length,
-                "total": total_size.unwrap_or(0),
-            }));
-        },
-        || {},
-    ).await
+    update
+        .download_and_install(
+            move |chunk_length, total_size| {
+                let _ = app_handle.emit(
+                    "update-progress",
+                    serde_json::json!({
+                        "chunk": chunk_length,
+                        "total": total_size.unwrap_or(0),
+                    }),
+                );
+            },
+            || {},
+        )
+        .await
         .map_err(|e| {
             warn!("Update installation failed: {}", e);
             e.to_string()
@@ -621,13 +645,19 @@ mod tests {
     #[test]
     fn routes_relative_paths_to_production() {
         let target = resolve_proxy_target("/profile?t=1", "GET").unwrap();
-        assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/profile?t=1");
+        assert_eq!(
+            target.as_str(),
+            "https://pokemon-auto-chess.com/profile?t=1"
+        );
     }
 
     #[test]
     fn routes_relative_player_search_to_production() {
         let target = resolve_proxy_target("/players?name=test", "GET").unwrap();
-        assert_eq!(target.as_str(), "https://pokemon-auto-chess.com/players?name=test");
+        assert_eq!(
+            target.as_str(),
+            "https://pokemon-auto-chess.com/players?name=test"
+        );
     }
 
     #[test]
@@ -658,11 +688,8 @@ mod tests {
 
     #[test]
     fn allows_production_subdomain_urls() {
-        let target = resolve_proxy_target(
-            "https://api.pokemon-auto-chess.com/something",
-            "POST",
-        )
-        .unwrap();
+        let target =
+            resolve_proxy_target("https://api.pokemon-auto-chess.com/something", "POST").unwrap();
         assert_eq!(
             target.as_str(),
             "https://api.pokemon-auto-chess.com/something"
@@ -684,9 +711,7 @@ mod tests {
         // "evil-pokemon-auto-chess.com" is not the prod host nor a subdomain.
         // This test guards against a bug where `ends_with("pokemon-auto-chess.com")`
         // alone would incorrectly accept look-alike domains.
-        assert!(
-            resolve_proxy_target("https://evil-pokemon-auto-chess.com/steal", "GET").is_err()
-        );
+        assert!(resolve_proxy_target("https://evil-pokemon-auto-chess.com/steal", "GET").is_err());
     }
 
     #[test]
