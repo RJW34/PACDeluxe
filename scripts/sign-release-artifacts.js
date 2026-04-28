@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertExistingFile, getWindowsReleaseArtifacts } from './release-artifacts.js';
@@ -51,6 +51,14 @@ function prepareSigningConfig(config) {
     password: config.password,
     cleanup: () => rmSync(tempDir, { recursive: true, force: true }),
   };
+}
+
+function hasExistingSignature(signaturePath) {
+  if (!existsSync(signaturePath)) {
+    return false;
+  }
+
+  return statSync(signaturePath).size > 0;
 }
 
 function extractSignature(stdout, artifactPath) {
@@ -117,12 +125,26 @@ function runSigner(artifactPath, config) {
   return extractSignature(result.stdout, artifactPath);
 }
 
+const artifacts = getWindowsReleaseArtifacts();
+const unsignedArtifacts = [];
+
+for (const artifact of artifacts) {
+  assertExistingFile(artifact.path, `${artifact.kind} installer`);
+  const signaturePath = `${artifact.path}.sig`;
+  if (hasExistingSignature(signaturePath)) {
+    console.log(`[release:sign] Reusing existing ${signaturePath}`);
+  } else {
+    unsignedArtifacts.push(artifact);
+  }
+}
+
+if (unsignedArtifacts.length === 0) {
+  process.exit(0);
+}
+
 const config = prepareSigningConfig(getSigningConfig());
 try {
-  const artifacts = getWindowsReleaseArtifacts();
-
-  for (const artifact of artifacts) {
-    assertExistingFile(artifact.path, `${artifact.kind} installer`);
+  for (const artifact of unsignedArtifacts) {
     const signature = runSigner(artifact.path, config);
     const signaturePath = `${artifact.path}.sig`;
     writeFileSync(signaturePath, signature, 'ascii');
