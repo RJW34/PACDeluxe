@@ -11,6 +11,7 @@ target/
 
 # Rust
 Cargo.lock
+!src-tauri/Cargo.lock
 **/*.rs.bk
 
 # Tauri
