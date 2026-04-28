@@ -58,8 +58,22 @@ jobs:
       - name: Build and sign Tauri app
         run: npm run tauri:build
         env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Sign release artifacts
+        run: npm run release:sign
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Write updater manifest
+        run: npm run release:manifest
+
+      - name: Verify release artifacts
+        run: npm run verify:release
 
       - name: List bundle files
         run: |
@@ -67,16 +81,29 @@ jobs:
           dir src-tauri\target\release\bundle\nsis\
           echo "=== MSI bundle ==="
           dir src-tauri\target\release\bundle\msi\
+          echo "=== Updater manifest ==="
+          dir src-tauri\target\release\bundle\latest.json
 
-      - name: Upload Windows release
-        uses: tauri-apps/tauri-action@v0
+      - name: Publish GitHub release
+        shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'PACDeluxe ${{ github.ref_name }}'
-          releaseBody: 'See the assets below to download and install this version.'
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-          tauriScript: echo "skip"
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $assets = @(
+            "src-tauri\target\release\bundle\nsis\PACDeluxe_${version}_x64-setup.exe",
+            "src-tauri\target\release\bundle\nsis\PACDeluxe_${version}_x64-setup.exe.sig",
+            "src-tauri\target\release\bundle\msi\PACDeluxe_${version}_x64_en-US.msi",
+            "src-tauri\target\release\bundle\msi\PACDeluxe_${version}_x64_en-US.msi.sig",
+            "src-tauri\target\release\bundle\latest.json"
+          )
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $assets --clobber
+          } else {
+            gh release create $tag $assets --title "PACDeluxe $tag" --notes "See the assets below to download and install this version."
+          }
+
+      - name: Verify published updater endpoint
+        run: npm run verify:updater -- --retries=10 --delay-ms=15000

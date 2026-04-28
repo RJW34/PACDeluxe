@@ -14,13 +14,14 @@
 //!   - uses Tauri's `AssetResolver` so assets work in both dev (read
 //!     from frontendDist on disk) and release (embedded in the binary
 //!     via `custom-protocol`)
-//!   - falls back to `index.html` for any path the resolver can't find,
-//!     so React Router owns the whole path space client-side
+//!   - falls back to `index.html` only for known React Router routes
+//!   - returns explicit 404/501 responses for missing assets or upstream API
+//!     paths, so stale service workers cannot cache HTML as game data
 
 use std::net::{SocketAddr, TcpListener};
 
-use tauri::{AppHandle, Runtime};
-use tiny_http::{Header, Method, Response, Server};
+use tauri::{AppHandle, Asset, Runtime};
+use tiny_http::{Header, Method, Response, Server, StatusCode};
 use tracing::{debug, info, warn};
 
 const PREFERRED_LOCALHOST_PORT: u16 = 37529;
@@ -109,6 +110,34 @@ fn spawn_bound_server<R: Runtime>(
     Ok(port)
 }
 
+const SPA_ROUTE_PREFIXES: &[&str] = &[
+    "/lobby",
+    "/preparation",
+    "/game",
+    "/after",
+    "/bot-builder",
+    "/bot-admin",
+    "/sprite-viewer",
+    "/map-viewer",
+    "/gameboy",
+    "/translations",
+    "/auth",
+];
+
+const LOCAL_STATIC_FETCH_PREFIXES: &[&str] = &[
+    "/assets/",
+    "/tilemap/",
+    "/style/",
+    "/locales/",
+    "/pokechess/",
+    "/changelog/",
+];
+
+const LOCAL_STATIC_FETCH_EXTENSIONS: &[&str] = &[
+    ".html", ".js", ".mjs", ".map", ".css", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    ".ico", ".mp3", ".ogg", ".wav", ".m4a", ".woff", ".woff2", ".ttf", ".otf",
+];
+
 fn handle<R: Runtime>(request: tiny_http::Request, app: &AppHandle<R>) {
     match request.method() {
         Method::Get | Method::Head => {}
@@ -125,48 +154,206 @@ fn handle<R: Runtime>(request: tiny_http::Request, app: &AppHandle<R>) {
 
     let resolver = app.asset_resolver();
 
-    // Try the exact path; fall back to /index.html if the resolver
-    // doesn't know about it. This is what makes React Router SPA routes
-    // work: hitting /lobby directly (e.g. as the Firebase redirect
-    // success URL) serves index.html and React takes over client-side.
-    let primary = resolver.get(normalize_asset_key(path));
-    let asset = primary.or_else(|| resolver.get("/index.html".to_string()));
+    // Classify before asking the resolver. Tauri's release AssetResolver can
+    // itself return index.html for unknown paths, so calling it first would
+    // still let `/assets/missing.json` or `/tilemap/Foo` masquerade as a
+    // successful HTML response.
+    if is_local_static_path(path) {
+        let asset_key = normalize_asset_key(path);
+        let asset = if is_tilemap_json_alias(path) {
+            resolver.get(format!("{}.json", asset_key))
+        } else {
+            resolver.get(asset_key)
+        };
 
-    match asset {
-        Some(asset) => {
-            debug!(
-                "localhost GET {} -> {} bytes ({})",
-                raw,
-                asset.bytes.len(),
-                asset.mime_type
-            );
-            let content_type =
-                Header::from_bytes(&b"Content-Type"[..], asset.mime_type.as_bytes()).unwrap();
-            let cache_control =
-                Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap();
-            let content_length = asset.bytes.len();
-
-            if is_head {
-                let response = Response::empty(200)
-                    .with_header(content_type)
-                    .with_header(cache_control)
-                    .with_data(std::io::empty(), Some(content_length));
-                let _ = request.respond(response);
-            } else {
-                let response = Response::from_data(asset.bytes)
-                    .with_header(content_type)
-                    .with_header(cache_control);
-                let _ = request.respond(response);
+        match asset {
+            Some(asset) if asset_matches_request(path, &asset.mime_type) => {
+                serve_asset(request, raw, asset, is_head);
+            }
+            Some(asset) => {
+                warn!(
+                    "localhost GET {} -> rejected HTML fallback for local asset ({})",
+                    raw, asset.mime_type
+                );
+                respond_text(
+                    request,
+                    404,
+                    "text/plain; charset=utf-8",
+                    "Not Found",
+                    is_head,
+                );
+            }
+            None => {
+                debug!("localhost GET {} -> missing local asset", raw);
+                respond_text(
+                    request,
+                    404,
+                    "text/plain; charset=utf-8",
+                    "Not Found",
+                    is_head,
+                );
             }
         }
-        None => {
-            warn!(
-                "localhost GET {} -> asset resolver returned None (and index.html fallback also missing)",
-                raw
-            );
-            let _ = request.respond(Response::empty(500));
-        }
+        return;
     }
+
+    if is_spa_route_path(path) {
+        match resolver.get("/index.html".to_string()) {
+            Some(asset) => {
+                serve_asset(request, raw, asset, is_head);
+            }
+            None => {
+                warn!("localhost GET {} -> index.html fallback missing", raw);
+                let _ = request.respond(Response::empty(500));
+            }
+        }
+        return;
+    }
+
+    warn!(
+        "localhost GET {} -> native proxy required before network",
+        raw
+    );
+    respond_text(
+        request,
+        501,
+        "application/json; charset=utf-8",
+        &format!(
+            r#"{{"error":"PACDeluxe native proxy required","path":"{}"}}"#,
+            json_escape(path)
+        ),
+        is_head,
+    );
+}
+
+fn serve_asset(request: tiny_http::Request, raw: String, asset: Asset, is_head: bool) {
+    debug!(
+        "localhost GET {} -> {} bytes ({})",
+        raw,
+        asset.bytes.len(),
+        asset.mime_type
+    );
+    let clean_path = clean_url_path(&raw);
+    let mime_type = if clean_path.starts_with("/tilemap/") {
+        "application/json; charset=utf-8"
+    } else {
+        asset.mime_type.as_str()
+    };
+    let content_type = Header::from_bytes(&b"Content-Type"[..], mime_type.as_bytes()).unwrap();
+    let cache_control = Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap();
+    let content_length = asset.bytes.len();
+
+    if is_head {
+        let response = Response::empty(200)
+            .with_header(content_type)
+            .with_header(cache_control)
+            .with_data(std::io::empty(), Some(content_length));
+        let _ = request.respond(response);
+    } else {
+        let response = Response::from_data(asset.bytes)
+            .with_header(content_type)
+            .with_header(cache_control);
+        let _ = request.respond(response);
+    }
+}
+
+fn respond_text(
+    request: tiny_http::Request,
+    status: u16,
+    content_type_value: &str,
+    body: &str,
+    is_head: bool,
+) {
+    let content_type =
+        Header::from_bytes(&b"Content-Type"[..], content_type_value.as_bytes()).unwrap();
+    let cache_control = Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap();
+    if is_head {
+        let response = Response::empty(StatusCode(status))
+            .with_header(content_type)
+            .with_header(cache_control);
+        let _ = request.respond(response);
+    } else {
+        let response = Response::from_string(body.to_string())
+            .with_status_code(StatusCode(status))
+            .with_header(content_type)
+            .with_header(cache_control);
+        let _ = request.respond(response);
+    }
+}
+
+fn is_spa_route_path(path: &str) -> bool {
+    let clean = clean_url_path(path);
+    if clean == "/" || clean == "/index.html" {
+        return true;
+    }
+    SPA_ROUTE_PREFIXES
+        .iter()
+        .any(|prefix| clean == *prefix || clean.starts_with(&format!("{}/", prefix)))
+}
+
+fn is_local_static_path(path: &str) -> bool {
+    let clean = clean_url_path(path);
+    if clean == "/" || clean == "/index.html" {
+        return true;
+    }
+    if LOCAL_STATIC_FETCH_PREFIXES
+        .iter()
+        .any(|prefix| clean.starts_with(prefix))
+    {
+        return true;
+    }
+    let lower = clean.to_ascii_lowercase();
+    if let Some(dot) = lower.rfind('.') {
+        return LOCAL_STATIC_FETCH_EXTENSIONS
+            .iter()
+            .any(|ext| &lower[dot..] == *ext);
+    }
+    false
+}
+
+fn is_tilemap_json_alias(path: &str) -> bool {
+    let clean = clean_url_path(path);
+    if !clean.starts_with("/tilemap/") || clean.ends_with(".json") {
+        return false;
+    }
+    let name = &clean["/tilemap/".len()..];
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn asset_matches_request(path: &str, mime_type: &str) -> bool {
+    let clean = clean_url_path(path);
+    if clean == "/" || clean.ends_with(".html") {
+        return true;
+    }
+    !mime_type.to_ascii_lowercase().starts_with("text/html")
+}
+
+fn clean_url_path(path: &str) -> String {
+    let clean = path
+        .split('?')
+        .next()
+        .unwrap_or("/")
+        .split('#')
+        .next()
+        .unwrap_or("/");
+    if clean.is_empty() {
+        "/".to_string()
+    } else if clean.starts_with('/') {
+        clean.to_string()
+    } else {
+        format!("/{}", clean)
+    }
+}
+
+fn json_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
 /// Normalise a URL path into the key shape the asset resolver expects.
@@ -264,5 +451,30 @@ mod tests {
     #[test]
     fn null_byte_is_rejected() {
         assert_eq!(normalize_asset_key("/foo\0bar"), "/index.html");
+    }
+
+    #[test]
+    fn spa_routes_are_the_only_missing_paths_that_fallback_to_index() {
+        assert!(is_spa_route_path("/"));
+        assert!(is_spa_route_path("/lobby"));
+        assert!(is_spa_route_path("/game/abc"));
+        assert!(!is_spa_route_path("/tilemap/AmpPlains"));
+        assert!(!is_spa_route_path("/profile"));
+        assert!(!is_spa_route_path("/assets/pokemons/0001.json"));
+    }
+
+    #[test]
+    fn local_static_classifier_matches_packaged_asset_paths() {
+        assert!(is_local_static_path("/assets/pokemons/0001.json?v=1"));
+        assert!(is_local_static_path("/locales/en/translation.json"));
+        assert!(is_local_static_path("/tilemap/AmpPlains"));
+        assert!(is_tilemap_json_alias("/tilemap/AmpPlains"));
+        assert!(!is_tilemap_json_alias("/tilemap/AmpPlains.json"));
+        assert!(!is_tilemap_json_alias("/tilemap/../secret"));
+        assert!(is_local_static_path("/index.js"));
+        assert!(is_local_static_path("/style/index.css"));
+
+        assert!(!is_local_static_path("/profile"));
+        assert!(!is_local_static_path("/leaderboards"));
     }
 }

@@ -12,10 +12,11 @@
  * IMPORTANT: This script does NOT modify any gameplay logic.
  */
 
-import { execSync } from 'child_process';
-import { existsSync, mkdirSync, cpSync, rmSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { execSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ensureUpstreamClientGeneratedAssets } from './upstream-client-assets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -63,6 +64,9 @@ async function main() {
     'app/public/src/index.tsx',
     'app/public/src/game/game-container.ts',
     'app/public/src/game/scenes/game-scene.ts',
+    'app/public/dist/client/locales/index.ts',
+    'app/public/dist/client/locales/en/translation.json',
+    'app/public/dist/client/sw.js',
     'esbuild.js',
     'package.json'
   ];
@@ -73,6 +77,11 @@ async function main() {
       throw new Error(`Critical file missing: ${file}`);
     }
   }
+
+  ensureUpstreamClientGeneratedAssets({
+    upstreamDir: UPSTREAM_DIR,
+    log,
+  });
 
   log('Upstream sync complete!');
   log(`Upstream version: ${getUpstreamVersion()}`);

@@ -27,6 +27,7 @@
  */
 export const LOCAL_STATIC_FETCH_PREFIXES = Object.freeze([
   '/assets/',
+  '/tilemap/',
   '/style/',
   '/locales/',
   '/pokechess/',

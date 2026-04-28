@@ -11,11 +11,21 @@
  * Failure indicates potential cheating functionality that must be removed.
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import {
+  readFileSync,
+  readdirSync,
+  statSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import {
   LOCAL_STATIC_FETCH_PREFIXES,
   LOCAL_STATIC_FETCH_EXTENSIONS,
@@ -23,6 +33,13 @@ import {
   isLocalStaticPath,
 } from '../scripts/proxy-manifest.js';
 import { verifyBuildManifest } from '../scripts/verify-build-manifest.js';
+import {
+  REQUIRED_UPSTREAM_CLIENT_GENERATED_PATHS,
+  REQUIRED_TEXTURE_PACKS,
+  ensureUpstreamClientGeneratedAssets,
+  getMissingUpstreamClientGeneratedPaths,
+  getRequiredUpstreamClientGeneratedPaths,
+} from '../scripts/upstream-client-assets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -136,6 +153,30 @@ function getUpstreamRelativeFetchPaths() {
   }
 
   return Array.from(relativeFetchPaths).sort();
+}
+
+function createTempUpstreamDir() {
+  return mkdtempSync(join(tmpdir(), 'pac-upstream-assets-'));
+}
+
+function writeRequiredGeneratedUpstreamAssets(upstreamDir) {
+  for (const relativePath of REQUIRED_UPSTREAM_CLIENT_GENERATED_PATHS) {
+    const fullPath = join(upstreamDir, relativePath);
+    mkdirSync(dirname(fullPath), { recursive: true });
+    writeFileSync(fullPath, '{}\n');
+  }
+}
+
+function readTauriMain() {
+  return readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+}
+
+function readRuntimeScript(name) {
+  return readFileSync(join(ROOT, 'src-tauri', 'src', 'runtime', name), 'utf-8');
+}
+
+function readLocalhostServer() {
+  return readFileSync(join(ROOT, 'src-tauri', 'src', 'localhost_server.rs'), 'utf-8');
 }
 
 describe('Ethical Safeguards', () => {
@@ -315,7 +356,7 @@ describe('Ethical Safeguards', () => {
     it('should not intercept or modify network traffic', () => {
       // main.rs contains the PACDeluxe runtime, including an allowlisted proxy
       // wrapper for official upstream HTTP requests.
-      const allowedFetchIntercept = ['main.rs'];
+      const allowedFetchIntercept = ['main.rs', 'overlay.js'];
 
       for (const file of sourceFiles) {
         try {
@@ -398,7 +439,7 @@ describe('Packaging Validation', () => {
     }
 
     // Check runtime directories that must exist for the app to function
-    const requiredDirs = ['assets', 'locales'];
+    const requiredDirs = ['assets', 'locales', 'tilemap'];
     const optionalDirs = ['style', 'pokechess', 'changelog'];
 
     for (const dir of requiredDirs) {
@@ -413,6 +454,11 @@ describe('Packaging Validation', () => {
         console.log(`Note: optional dist/${dir}/ not found`);
       }
     }
+
+    assert.ok(
+      existsSync(join(distDir, 'tilemap', 'AmpPlains.json')),
+      'Required packaged tilemap missing from dist/: tilemap/AmpPlains.json'
+    );
   });
 });
 
@@ -456,12 +502,103 @@ describe('Architecture Guardrails', () => {
     );
   });
 
+  it('should declare the generated upstream client assets required by the build', () => {
+    const requiredPaths = getRequiredUpstreamClientGeneratedPaths(join(ROOT, 'upstream-game'));
+
+    assert.ok(
+      REQUIRED_UPSTREAM_CLIENT_GENERATED_PATHS.includes(
+        'app/public/dist/client/locales/index.ts'
+      ),
+      'The build must require the generated locales module imported by upstream source'
+    );
+    assert.ok(
+      REQUIRED_UPSTREAM_CLIENT_GENERATED_PATHS.includes(
+        'app/public/dist/client/locales/en/translation.json'
+      ),
+      'The build must require the English translation JSON used by upstream runtime imports'
+    );
+    assert.ok(
+      REQUIRED_UPSTREAM_CLIENT_GENERATED_PATHS.includes(
+        'app/public/dist/client/pokechess/index.html'
+      ),
+      'The build must require the generated pokechess runtime assets copied into PAC dist/'
+    );
+    assert.ok(
+      REQUIRED_TEXTURE_PACKS.includes('abilities') &&
+        REQUIRED_TEXTURE_PACKS.includes('item') &&
+        REQUIRED_TEXTURE_PACKS.includes('types'),
+      'The build must know about upstream texture-pack atlas families'
+    );
+    if (existsSync(join(ROOT, 'upstream-game', 'package.json'))) {
+      assert.ok(
+        requiredPaths.some((relativePath) =>
+          /app\/public\/dist\/client\/assets\/abilities\/abilities-\d+\.\d+\.\d+\.json/.test(relativePath)
+        ),
+        'The build must require generated versioned Phaser texture-pack JSON atlases'
+      );
+      assert.ok(
+        requiredPaths.some((relativePath) =>
+          /app\/public\/dist\/client\/assets\/item\/item-\d+\.\d+\.\d+\.png/.test(relativePath)
+        ),
+        'The build must require generated versioned Phaser texture-pack PNG atlases'
+      );
+    }
+  });
+
+  it('should fail loudly when generated upstream client assets are missing outside a git checkout', () => {
+    const upstreamDir = createTempUpstreamDir();
+    try {
+      assert.throws(
+        () => ensureUpstreamClientGeneratedAssets({ upstreamDir }),
+        /Missing upstream generated client assets/,
+        'Missing upstream generated client assets must not fall through to an opaque esbuild failure'
+      );
+    } finally {
+      rmSync(upstreamDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should pass the generated upstream client asset check when all required files exist', () => {
+    const upstreamDir = createTempUpstreamDir();
+    try {
+      writeRequiredGeneratedUpstreamAssets(upstreamDir);
+      assert.deepStrictEqual(getMissingUpstreamClientGeneratedPaths(upstreamDir), []);
+      assert.doesNotThrow(() => ensureUpstreamClientGeneratedAssets({ upstreamDir }));
+    } finally {
+      rmSync(upstreamDir, { recursive: true, force: true });
+    }
+  });
+
   it('should not rely on disable-web-security in the runtime', () => {
-    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+    const runtimeSurface = [
+      readTauriMain(),
+      readRuntimeScript('overlay.js'),
+      readRuntimeScript('auth-popup-bridge.js'),
+    ].join('\n');
     assert.strictEqual(
-      mainRs.includes('--disable-web-security'),
+      runtimeSurface.includes('--disable-web-security'),
       false,
       'The runtime should not depend on the WebView browser-security bypass flag'
+    );
+  });
+
+  it('should keep injected runtime scripts in standalone JavaScript files', () => {
+    const mainRs = readTauriMain();
+    assert.ok(
+      mainRs.includes('include_str!("runtime/overlay.js")'),
+      'main.rs should include the overlay runtime from src-tauri/src/runtime/overlay.js'
+    );
+    assert.ok(
+      mainRs.includes('include_str!("runtime/auth-popup-bridge.js")'),
+      'main.rs should include the auth popup bridge from src-tauri/src/runtime/auth-popup-bridge.js'
+    );
+    assert.ok(
+      readRuntimeScript('overlay.js').includes('Native proxy active'),
+      'overlay.js should contain the PACDeluxe runtime proxy bootstrap'
+    );
+    assert.ok(
+      readRuntimeScript('auth-popup-bridge.js').includes('window.opener mock installed'),
+      'auth-popup-bridge.js should contain the Firebase popup opener mock'
     );
   });
 
@@ -473,6 +610,7 @@ describe('Architecture Guardrails', () => {
       'Builds must use explicit Firebase config instead of scraping production'
     );
     assert.strictEqual(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: This is the literal stale production-scrape marker.
       buildScript.includes('https://pokemon-auto-chess.com/${scriptMatch[1]}'),
       false,
       'Builds must not parse the production bundle for config'
@@ -499,28 +637,28 @@ describe('Architecture Guardrails', () => {
   });
 
   it('should pin the JS fetch interceptor to the shared local-asset manifest', () => {
-    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+    const overlayJs = readRuntimeScript('overlay.js');
 
     for (const prefix of LOCAL_STATIC_FETCH_PREFIXES) {
       assert.ok(
-        mainRs.includes(`'${prefix}'`),
-        `main.rs OVERLAY_SCRIPT localAssetPrefixes is missing ${prefix}`
+        overlayJs.includes(`'${prefix}'`),
+        `overlay.js localAssetPrefixes is missing ${prefix}`
       );
     }
     for (const ext of LOCAL_STATIC_FETCH_EXTENSIONS) {
       assert.ok(
-        mainRs.includes(`'${ext}'`),
-        `main.rs OVERLAY_SCRIPT localAssetExtensions is missing ${ext}`
+        overlayJs.includes(`'${ext}'`),
+        `overlay.js localAssetExtensions is missing ${ext}`
       );
     }
     assert.ok(
-      mainRs.includes(`const PROD_HOST = '${PROD_HOST}';`),
-      'main.rs OVERLAY_SCRIPT must pin PROD_HOST to scripts/proxy-manifest.js'
+      overlayJs.includes(`const PROD_HOST = '${PROD_HOST}';`),
+      'overlay.js must pin PROD_HOST to scripts/proxy-manifest.js'
     );
     // The old runtime allowlist should stay gone.
     assert.ok(
-      !mainRs.includes('const apiPrefixes = ['),
-      'main.rs must not reintroduce the apiPrefixes allowlist - use the origin-scoped model'
+      !overlayJs.includes('const apiPrefixes = ['),
+      'overlay.js must not reintroduce the apiPrefixes allowlist - use the origin-scoped model'
     );
   });
 
@@ -576,7 +714,7 @@ describe('Architecture Guardrails', () => {
     assert.strictEqual(isLocalStaticPath('/profile'), false);
     assert.strictEqual(isLocalStaticPath('/bots'), false);
     assert.strictEqual(isLocalStaticPath('/leaderboards'), false);
-    assert.strictEqual(isLocalStaticPath('/tilemap/forest'), false);
+    assert.strictEqual(isLocalStaticPath('/tilemap/forest'), true);
     assert.strictEqual(isLocalStaticPath('/game-history/abc'), false);
     assert.strictEqual(isLocalStaticPath('/chat-history/abc'), false);
     assert.strictEqual(isLocalStaticPath('/moderation/rename-account'), false);
@@ -590,22 +728,23 @@ describe('Architecture Guardrails', () => {
   });
 
   it('should URL-gate the main-window window.open mock so non-auth popups do not clobber activeMockPopup', () => {
-    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+    const overlayJs = readRuntimeScript('overlay.js');
     // The interceptor must check for an auth-looking URL before returning
     // a mock, otherwise Discord/Patreon _blank popups would replace the
     // Firebase auth popup reference mid-flow.
     assert.ok(
-      mainRs.includes('function isAuthPopupUrl(url)'),
+      overlayJs.includes('function isAuthPopupUrl(url)'),
       'OVERLAY_SCRIPT must gate its window.open mock via an auth-URL predicate'
     );
     assert.ok(
-      mainRs.includes("if (!isAuthPopupUrl(url))"),
+      overlayJs.includes("if (!isAuthPopupUrl(url))"),
       'window.open mock must return early for non-auth URLs'
     );
   });
 
   it('should bridge main->popup MessageEvents from Rust rather than a re-registered JS listener', () => {
-    const mainRs = readFileSync(join(ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8');
+    const mainRs = readTauriMain();
+    const authBridgeJs = readRuntimeScript('auth-popup-bridge.js');
     // Rust-side dispatch avoids accumulating zombie listeners on the
     // Tauri event bus every time the popup navigates cross-origin during
     // OAuth (the JS initialization_script would otherwise re-register).
@@ -614,8 +753,192 @@ describe('Architecture Guardrails', () => {
       'setup() must register a Rust-side listener for pac-main-to-popup'
     );
     assert.ok(
-      !mainRs.includes("event.listen('pac-main-to-popup'"),
+      !authBridgeJs.includes("event.listen('pac-main-to-popup'"),
       'AUTH_POPUP_BRIDGE_SCRIPT must not re-register a JS listener for pac-main-to-popup on every popup page load'
+    );
+  });
+
+  it('should keep FirebaseUI on popup auth so the main WebView stays on the bundled client', () => {
+    const buildScript = readFileSync(join(ROOT, 'scripts', 'build-frontend.js'), 'utf-8');
+    assert.ok(
+      buildScript.includes('loginContent.includes(\'signInFlow: "redirect"\')'),
+      'build-frontend.js must detect redirect auth as the stale upstream/local-build state'
+    );
+    assert.ok(
+      buildScript.includes('\'signInFlow: "popup"\''),
+      'build-frontend.js must patch FirebaseUI to popup auth for the Tauri popup bridge'
+    );
+    assert.strictEqual(
+      buildScript.includes('Switch Firebase auth to redirect flow'),
+      false,
+      'build-frontend.js must not restore the old redirect-auth patch'
+    );
+  });
+
+  it('should disable upstream persistent service-worker asset caching', () => {
+    const buildScript = readFileSync(join(ROOT, 'scripts', 'build-frontend.js'), 'utf-8');
+
+    assert.ok(
+      buildScript.includes('service-worker-cache-disable'),
+      'build-frontend.js must apply the service-worker-cache-disable patch'
+    );
+    assert.ok(
+      buildScript.includes('registration.unregister()'),
+      'the local build must unregister existing service workers'
+    );
+    assert.ok(
+      buildScript.includes('window.caches.delete(key)'),
+      'the local build must clear CacheStorage entries created by old upstream service workers'
+    );
+    assert.ok(
+      buildScript.includes('createServiceWorkerCleanupScript'),
+      'dist/sw.js must be replaced with a cleanup worker, not copied from upstream'
+    );
+    assert.strictEqual(
+      buildScript.includes('cpSync(join(clientDist, \'sw.js\')'),
+      false,
+      'build-frontend.js must not copy the upstream cache-first sw.js into dist/'
+    );
+  });
+
+  it('should copy upstream generated texture-pack atlases into PAC dist assets', () => {
+    const buildScript = readFileSync(join(ROOT, 'scripts', 'build-frontend.js'), 'utf-8');
+
+    assert.ok(
+      buildScript.includes('generatedAssetsDir'),
+      'build-frontend.js must locate app/public/dist/client/assets'
+    );
+    assert.ok(
+      buildScript.includes('Copied generated texture-pack assets/'),
+      'build-frontend.js must copy generated texture-pack assets into dist/assets'
+    );
+    assert.ok(
+      buildScript.includes('Pokemon sprites remain stuck on loading_pokeball placeholders'),
+      'the build script should document why generated atlases are required'
+    );
+  });
+
+  it('should package generated tilemaps for render-critical Phaser preload', () => {
+    const buildScript = readFileSync(join(ROOT, 'scripts', 'build-frontend.js'), 'utf-8');
+    const generatorScript = readFileSync(join(ROOT, 'scripts', 'generate-tilemaps.cjs'), 'utf-8');
+    const releaseVerifier = readFileSync(join(ROOT, 'scripts', 'verify-release-artifacts.js'), 'utf-8');
+
+    assert.ok(
+      LOCAL_STATIC_FETCH_PREFIXES.includes('/tilemap/'),
+      'the local-static manifest must serve /tilemap/ from packaged files'
+    );
+    assert.ok(
+      buildScript.includes('generateLocalTilemaps'),
+      'build-frontend.js must generate packaged tilemap files'
+    );
+    assert.ok(
+      buildScript.includes('before the Tauri fetch proxy has initialized'),
+      'build-frontend.js should document why tilemaps cannot rely on the injected proxy'
+    );
+    assert.ok(
+      generatorScript.includes('initTilemap(mapName)'),
+      'tilemap generation must use the upstream initTilemap implementation'
+    );
+    assert.ok(
+      releaseVerifier.includes("dist', 'tilemap', 'AmpPlains.json"),
+      'release verification must require generated packaged tilemaps'
+    );
+  });
+
+  it('should keep release signing noninteractive and verified in CI', () => {
+    const packageJson = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const releaseWorkflow = readFileSync(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf-8');
+    const signScript = readFileSync(join(ROOT, 'scripts', 'sign-release-artifacts.js'), 'utf-8');
+    const verifyScript = readFileSync(join(ROOT, 'scripts', 'verify-release-artifacts.js'), 'utf-8');
+    const updaterScript = readFileSync(join(ROOT, 'scripts', 'verify-updater-endpoint.js'), 'utf-8');
+    const releaseChecklist = readFileSync(join(ROOT, 'docs', 'RELEASE_CHECKLIST.md'), 'utf-8');
+
+    assert.strictEqual(
+      packageJson.scripts['release:sign'],
+      'node scripts/sign-release-artifacts.js',
+      'package.json must expose release:sign'
+    );
+    assert.strictEqual(
+      packageJson.scripts['release:manifest'],
+      'node scripts/write-updater-manifest.js',
+      'package.json must expose release:manifest'
+    );
+    assert.strictEqual(
+      packageJson.scripts['verify:release'],
+      'node scripts/verify-release-artifacts.js --require-signatures',
+      'package.json must expose verify:release with signature enforcement'
+    );
+    assert.strictEqual(
+      packageJson.scripts['verify:updater'],
+      'node scripts/verify-updater-endpoint.js',
+      'package.json must expose verify:updater'
+    );
+    assert.ok(
+      releaseWorkflow.includes('TAURI_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'),
+      'release workflow must map existing key secret to the Tauri 2 private-key env var'
+    );
+    assert.ok(
+      releaseWorkflow.includes('npm run release:sign') &&
+        releaseWorkflow.includes('npm run release:manifest') &&
+        releaseWorkflow.includes('npm run verify:release'),
+      'release workflow must sign, write updater metadata, and verify artifacts before upload'
+    );
+    assert.ok(
+      releaseWorkflow.includes('npm run verify:updater'),
+      'release workflow must verify the published updater endpoint after upload'
+    );
+    assert.ok(
+      releaseWorkflow.includes('gh release create') &&
+        releaseWorkflow.includes('latest.json'),
+      'release workflow must publish installers, signatures, and latest.json explicitly'
+    );
+    assert.ok(
+      signScript.includes('Refusing to invoke the Tauri signer') &&
+        signScript.includes('TAURI_PRIVATE_KEY_PASSWORD'),
+      'release signing must fail clearly when the key password is missing'
+    );
+    assert.ok(
+      verifyScript.includes('--require-signatures') &&
+        verifyScript.includes('updater signature') &&
+        verifyScript.includes('updater latest.json'),
+      'release verification must require updater signatures and latest.json'
+    );
+    assert.ok(
+      updaterScript.includes('Updater endpoint advertises') &&
+        updaterScript.includes('tauri.conf.json'),
+      'updater verification must compare live latest.json against the package version'
+    );
+    assert.ok(
+      releaseChecklist.includes('npm run release:sign') &&
+        releaseChecklist.includes('npm run verify:release') &&
+        releaseChecklist.includes('npm run verify:updater'),
+      'release checklist must document signing, release verification, and updater verification'
+    );
+  });
+
+  it('should not fall back to index.html for missing packaged assets or upstream API paths', () => {
+    const localhostServer = readLocalhostServer();
+
+    assert.ok(
+      localhostServer.includes('is_spa_route_path(path)'),
+      'localhost_server.rs must only use index.html fallback for known SPA routes'
+    );
+    assert.ok(
+      localhostServer.includes('is_local_static_path(path)'),
+      'localhost_server.rs must distinguish missing packaged assets from SPA routes'
+    );
+    assert.ok(
+      localhostServer.includes('missing local asset'),
+      'missing local assets should produce an explicit 404 path'
+    );
+    assert.ok(
+      localhostServer.includes('native proxy required'),
+      'same-origin API paths that escape the JS proxy should fail explicitly'
+    );
+    assert.strictEqual(
+      localhostServer.includes('primary.or_else(|| resolver.get("/index.html".to_string()))'),
+      false,
+      'localhost_server.rs must not return index.html for every resolver miss'
     );
   });
 

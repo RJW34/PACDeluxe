@@ -7,12 +7,13 @@
  * declared in scripts/build-manifest.js.
  */
 
-import { execSync } from 'child_process';
-import { createHash } from 'crypto';
-import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { execFileSync, execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { REQUIRED_FIREBASE_KEYS, UPSTREAM_PATCHES } from './build-manifest.js';
+import { ensureUpstreamClientGeneratedAssets } from './upstream-client-assets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -95,6 +96,14 @@ const SERVERS_LIST_FILE = join(
   'servers',
   'servers-list.tsx'
 );
+const INDEX_FILE = join(
+  UPSTREAM_DIR,
+  'app',
+  'public',
+  'src',
+  'index.tsx'
+);
+const TILEMAP_GENERATOR_FILE = join(ROOT, 'scripts', 'generate-tilemaps.cjs');
 
 function log(msg) {
   console.log(`[build] ${msg}`);
@@ -371,6 +380,7 @@ function applyUpstreamPatches() {
   if (!networkContent.includes('"wss://pokemon-auto-chess.com"')) {
     networkContent = replaceOrThrow(
       networkContent,
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: This is the literal upstream source marker.
       'const endpoint = `${window.location.protocol.replace("http", "ws")}//${\n  window.location.host\n}`',
       'const endpoint = "wss://pokemon-auto-chess.com"',
       'network server URL'
@@ -379,36 +389,27 @@ function applyUpstreamPatches() {
     log(`Applied upstream patch: ${getPatchMeta('network-endpoint-hardcode').id}`);
   }
 
-  // === PATCH 4: Switch Firebase auth to redirect flow for local-build ===
-  // Popup auth depends on iframe<->popup postMessage plumbing that breaks
-  // inside WebView2 when the main window is served from http://localhost.
-  // Redirect flow navigates the whole page to Google OAuth and back -
-  // no popup window, no iframe relay, no window.opener dance. It works
-  // reliably because our origin is in Firebase's authorized-domains list.
-  //
-  // The signInSuccessUrl becomes a runtime expression so Firebase returns
-  // to our exact local origin (http://localhost:<port>) - hard-coding
-  // pokemon-auto-chess.com would bounce the main window to the live site.
+  // === PATCH 4: Keep Firebase auth on popup flow for local-build ===
+  // Redirect auth navigates the main WebView away from the bundled client.
+  // In WebView2 that can bounce back to the login page before FirebaseUI
+  // has settled the auth state. Popup auth keeps the main window stable and
+  // uses the Tauri bridge in src-tauri/src/runtime/*.js to provide the
+  // window.open/window.opener postMessage contract Firebase expects.
   if (existsSync(LOGIN_FILE)) {
     let loginContent = readFileSync(LOGIN_FILE, 'utf-8')
       .replace(/\r\n/g, '\n');
 
-    if (loginContent.includes('signInFlow: "popup"')) {
+    if (loginContent.includes('signInFlow: "redirect"')) {
       loginContent = loginContent.replace(
-        'signInFlow: "popup"',
-        'signInFlow: "redirect"'
+        'signInFlow: "redirect"',
+        'signInFlow: "popup"'
       );
       log(`Applied upstream patch: ${getPatchMeta('login-signin-flow').id}`);
     }
 
-    // Under redirect flow, returning `true` makes FirebaseUI call
-    // window.location.assign(signInSuccessUrl) after auth - same URL we
-    // just arrived at, so Chromium treats it as a reload. The reload
-    // interrupts Firebase's async IndexedDB persist of the auth state,
-    // so on reload there's no user, and the user sees a white flash
-    // and bounces back to the login page. Returning `false` keeps us
-    // on the current page; React already has the auth state via
-    // onAuthStateChanged and re-renders into the authenticated UI.
+    // Returning `false` keeps FirebaseUI from navigating after auth.
+    // React already receives the auth state via onAuthStateChanged and
+    // re-renders into the authenticated UI.
     if (loginContent.includes('signInSuccessWithAuthResult: () => true')) {
       loginContent = loginContent.replace(
         'signInSuccessWithAuthResult: () => true',
@@ -490,6 +491,110 @@ function applyUpstreamPatches() {
       }
     }
   }
+
+  // === PATCH 7: Disable the upstream persistent service worker cache ===
+  // Upstream's sw.js cache-firsts every /assets/ request. In PACDeluxe the
+  // static server previously fell back to index.html for missing assets, so
+  // old 2.0 builds could permanently cache HTML as Pokemon atlases / tileset
+  // images. Clear those caches and keep asset loading tied to the packaged
+  // files and the PACDeluxe runtime's in-memory cache.
+  if (existsSync(INDEX_FILE)) {
+    let indexContent = readFileSync(INDEX_FILE, 'utf-8')
+      .replace(/\r\n/g, '\n');
+
+    const staleServiceWorkerRegistration =
+      'if (navigator.serviceWorker) {\n  navigator.serviceWorker.register("sw.js")\n}\n';
+    const pacServiceWorkerCleanup =
+      'function clearPacDeluxeBrowserCaches() {\n' +
+      '  if (navigator.serviceWorker) {\n' +
+      '    navigator.serviceWorker.getRegistrations().then((registrations) => {\n' +
+      '      registrations.forEach((registration) => registration.unregister())\n' +
+      '    }).catch(() => {})\n' +
+      '  }\n' +
+      '  if (window.caches) {\n' +
+      '    window.caches.keys().then((keys) => {\n' +
+      '      keys.forEach((key) => window.caches.delete(key))\n' +
+      '    }).catch(() => {})\n' +
+      '  }\n' +
+      '}\n' +
+      '\n' +
+      'clearPacDeluxeBrowserCaches()\n';
+
+    if (indexContent.includes(staleServiceWorkerRegistration)) {
+      indexContent = indexContent.replace(
+        staleServiceWorkerRegistration,
+        pacServiceWorkerCleanup
+      );
+      writeFileSync(INDEX_FILE, indexContent);
+      log(`Applied upstream patch: ${getPatchMeta('service-worker-cache-disable').id}`);
+    }
+  }
+}
+
+function createServiceWorkerCleanupScript() {
+  return `/* PACDeluxe deliberately disables the upstream persistent asset cache.
+   Old 2.0 builds could cache HTML fallback responses under /assets/* URLs,
+   which leaves Pokemon atlases and tilesets stuck on placeholders. */
+const CACHE_DELETE_PROMISE = caches.keys()
+  .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+  .catch(() => undefined);
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(CACHE_DELETE_PROMISE.then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    CACHE_DELETE_PROMISE
+      .then(() => self.registration.unregister())
+      .then(() => self.clients.claim())
+      .catch(() => undefined)
+  );
+});
+`;
+}
+
+function createBrowserCacheCleanupScript() {
+  return `<script>
+(function() {
+  function clearPacDeluxeBrowserCaches() {
+    var jobs = [];
+    if ('serviceWorker' in navigator) {
+      jobs.push(navigator.serviceWorker.getRegistrations()
+        .then(function(registrations) {
+          return Promise.all(registrations.map(function(registration) {
+            try { registration.unregister(); } catch (_error) {}
+            try { registration.update(); } catch (_error) {}
+            return Promise.resolve();
+          }));
+        })
+        .catch(function() {}));
+    }
+    if (window.caches) {
+      jobs.push(window.caches.keys()
+        .then(function(keys) {
+          return Promise.all(keys.map(function(key) {
+            return window.caches.delete(key).catch(function() {});
+          }));
+        })
+        .catch(function() {}));
+    }
+    return Promise.all(jobs);
+  }
+  function loadPacBundle() {
+    if (window.__PAC_BUNDLE_LOADING__) return;
+    window.__PAC_BUNDLE_LOADING__ = true;
+    var script = document.createElement('script');
+    script.src = 'index.js';
+    script.defer = true;
+    document.head.appendChild(script);
+  }
+  Promise.race([
+    clearPacDeluxeBrowserCaches(),
+    new Promise(function(resolve) { setTimeout(resolve, 2500); })
+  ]).then(loadPacBundle, loadPacBundle);
+})();
+</script>`;
 }
 
 /**
@@ -499,12 +604,24 @@ function applyUpstreamPatches() {
 function ensureFirebaseConfig() {
   const envFile = join(UPSTREAM_DIR, '.env');
   const { values, resolvedSources } = resolveFirebaseConfig();
-  const envContent = REQUIRED_FIREBASE_KEYS
+  const envContent = `${REQUIRED_FIREBASE_KEYS
     .map((key) => `${key}="${values[key].replace(/"/g, '\\"')}"`)
-    .join('\n') + '\n';
+    .join('\n')}\n`;
 
   writeFileSync(envFile, envContent);
   log(`Firebase config written to upstream-game/.env (${resolvedSources.join(', ')})`);
+}
+
+function generateLocalTilemaps() {
+  log('Generating packaged tilemaps...');
+  execFileSync(process.execPath, [
+    TILEMAP_GENERATOR_FILE,
+    UPSTREAM_DIR,
+    join(DIST_DIR, 'tilemap'),
+  ], {
+    cwd: UPSTREAM_DIR,
+    stdio: 'inherit',
+  });
 }
 
 async function main() {
@@ -517,6 +634,11 @@ async function main() {
 
   // Ensure Firebase client config is available for the build
   ensureFirebaseConfig();
+
+  ensureUpstreamClientGeneratedAssets({
+    upstreamDir: UPSTREAM_DIR,
+    log,
+  });
 
   applyUpstreamPatches();
 
@@ -552,6 +674,25 @@ async function main() {
     cpSync(assetsDir, join(DIST_DIR, 'assets'), { recursive: true });
   }
 
+  // Copy generated texture-pack atlases (abilities/attacks/items/status/types)
+  // over the raw source assets. Upstream Phaser preload requests these
+  // versioned JSON/PNG atlases directly; without them the loader aborts and
+  // Pokemon sprites remain stuck on loading_pokeball placeholders.
+  const generatedAssetsDir = join(clientDist, 'assets');
+  if (existsSync(generatedAssetsDir)) {
+    cpSync(generatedAssetsDir, join(DIST_DIR, 'assets'), {
+      recursive: true,
+      force: true,
+    });
+    log('Copied generated texture-pack assets/');
+  }
+
+  // Pre-generate dynamic dungeon tilemaps as packaged JSON files. The
+  // upstream client requests /tilemap/<map> during Phaser preload; serving
+  // these locally avoids a race where that render-critical request can hit
+  // the localhost server before the Tauri fetch proxy has initialized.
+  generateLocalTilemaps();
+
   // Copy styles
   const stylesDir = join(UPSTREAM_DIR, 'app', 'public', 'src', 'style');
   if (existsSync(stylesDir)) {
@@ -585,10 +726,9 @@ async function main() {
   cpSync(join(clientDist, jsFile), join(DIST_DIR, 'index.js'));
   cpSync(join(clientDist, cssFile), join(DIST_DIR, 'index.css'));
 
-  // Copy service worker if exists
-  if (existsSync(join(clientDist, 'sw.js'))) {
-    cpSync(join(clientDist, 'sw.js'), join(DIST_DIR, 'sw.js'));
-  }
+  // Replace upstream's persistent cache-first service worker with a cleanup
+  // worker. The app also unregisters this from index.tsx/index.html.
+  writeFileSync(join(DIST_DIR, 'sw.js'), createServiceWorkerCleanupScript());
 
   // Calculate build version hash from the game bundle
   // This is used by the asset cache to detect version changes
@@ -605,7 +745,7 @@ async function main() {
   log('Creating index.html with overlay...');
   createIndexHtml(buildVersion);
 
-  log('Build complete! Output: ' + DIST_DIR);
+  log(`Build complete! Output: ${DIST_DIR}`);
 }
 
 function createIndexHtml(buildVersion) {
@@ -638,7 +778,7 @@ function createIndexHtml(buildVersion) {
   </style>
   <!-- PACDeluxe build version for cache invalidation -->
   <script>window.__PAC_BUILD_VERSION__="${buildVersion}";window.__PAC_BUILD_TIME__="${new Date().toISOString()}";</script>
-  <script src="index.js" defer></script>
+  ${createBrowserCacheCleanupScript()}
 </head>
 <body>
   <div id="root"></div>

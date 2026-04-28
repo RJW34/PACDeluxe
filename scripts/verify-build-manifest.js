@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { BUILD_MANIFEST_DOC, UPSTREAM_PATCHES } from './build-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -69,7 +69,9 @@ function main() {
 
   if (!result.ok) {
     console.error('[verify-build-manifest] FAILED');
-    result.errors.forEach((error) => console.error(`  - ${error}`));
+    for (const error of result.errors) {
+      console.error(`  - ${error}`);
+    }
     process.exit(1);
   }
 
@@ -81,4 +83,3 @@ function main() {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main();
 }
-

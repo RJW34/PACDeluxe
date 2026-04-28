@@ -13,9 +13,14 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:build:no-bundle": "tauri build --no-bundle",
     "dev": "npm run tauri:dev",
     "dev:static": "npm run build:frontend:dev && npm run tauri:dev -- --no-dev-server",
     "build": "npm run build:frontend && npm run tauri:build",
+    "release:sign": "node scripts/sign-release-artifacts.js",
+    "release:manifest": "node scripts/write-updater-manifest.js",
+    "verify:release": "node scripts/verify-release-artifacts.js --require-signatures",
+    "verify:updater": "node scripts/verify-updater-endpoint.js",
     "validate": "node scripts/validate-determinism.js",
     "verify:manifest": "node scripts/verify-build-manifest.js",
     "verify": "npm test && npm run validate && npm run verify:manifest && cargo check --manifest-path src-tauri/Cargo.toml --message-format short",
@@ -24,8 +29,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
-    "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/cli": "^2.10.1",
+    "@tauri-apps/api": "^2.9.1",
+    "@tauri-apps/cli": "^2.9.5",
     "esbuild": "^0.24.0"
   },
   "engines": {

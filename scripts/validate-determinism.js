@@ -6,10 +6,10 @@
  * compares replay artifacts when they are present.
  */
 
-import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { verifyBuildManifest } from './verify-build-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -288,7 +288,9 @@ async function main() {
   const manifestResult = verifyBuildManifest();
   if (!manifestResult.ok) {
     console.error('BUILD MANIFEST VERIFICATION FAILED');
-    manifestResult.errors.forEach((error) => console.error(`  - ${error}`));
+    for (const error of manifestResult.errors) {
+      console.error(`  - ${error}`);
+    }
     process.exit(1);
   }
   console.log('  ✓ Build manifest verification passed\n');
@@ -301,7 +303,9 @@ async function main() {
   ethicsPass = ethicsChecker.scanDirectory(join(ROOT, 'scripts')) && ethicsPass;
   if (!ethicsPass) {
     console.error('ETHICAL COMPLIANCE CHECK FAILED');
-    ethicsChecker.getViolations().forEach((violation) => console.error(`  - ${violation}`));
+    for (const violation of ethicsChecker.getViolations()) {
+      console.error(`  - ${violation}`);
+    }
     process.exit(1);
   }
   console.log('  ✓ Ethical compliance check passed\n');
@@ -337,7 +341,9 @@ async function main() {
 
   if (!rustPass) {
     console.error('RUST CODE INTEGRITY CHECK FAILED');
-    rustChecker.getViolations().forEach((violation) => console.error(`  - ${violation}`));
+    for (const violation of rustChecker.getViolations()) {
+      console.error(`  - ${violation}`);
+    }
     process.exit(1);
   }
 

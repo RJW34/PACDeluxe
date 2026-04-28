@@ -13,10 +13,10 @@
  * GET requests in that case so the failure mode is at least explicit.
  */
 
-import { createServer } from 'http';
-import { readFileSync, existsSync, statSync } from 'fs';
-import { join, extname, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { createServer } from 'node:http';
+import { readFileSync, existsSync, statSync } from 'node:fs';
+import { join, extname, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isLocalStaticPath } from './proxy-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -61,12 +61,15 @@ const SPA_ROUTE_PREFIXES = [
   '/auth',
 ];
 
-function getMimeType(filepath) {
+function getMimeType(filepath, pathname = '') {
+  if (pathname.startsWith('/tilemap/')) {
+    return 'application/json';
+  }
   const ext = extname(filepath).toLowerCase();
   return MIME_TYPES[ext] || 'application/octet-stream';
 }
 
-function serveFile(res, filepath) {
+function serveFile(res, filepath, pathname = '') {
   try {
     if (!existsSync(filepath)) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -85,7 +88,7 @@ function serveFile(res, filepath) {
     }
 
     const content = readFileSync(filepath);
-    const mimeType = getMimeType(filepath);
+    const mimeType = getMimeType(filepath, pathname);
 
     res.writeHead(200, {
       'Content-Type': mimeType,
@@ -97,6 +100,21 @@ function serveFile(res, filepath) {
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end(`Server Error: ${err.message}`);
   }
+}
+
+function resolveDistFile(pathname) {
+  const filepath = join(DIST_DIR, pathname);
+  if (existsSync(filepath)) {
+    return filepath;
+  }
+  if (
+    pathname.startsWith('/tilemap/') &&
+    !pathname.endsWith('.json') &&
+    /^[A-Za-z0-9_-]+$/.test(pathname.slice('/tilemap/'.length))
+  ) {
+    return `${filepath}.json`;
+  }
+  return filepath;
 }
 
 const server = createServer((req, res) => {
@@ -116,24 +134,24 @@ const server = createServer((req, res) => {
     pathname = '/index.html';
   }
 
-  const filepath = join(DIST_DIR, pathname);
+  const filepath = resolveDistFile(pathname);
 
   // Known SPA routes -> index.html, upstream's React Router handles them.
-  if (SPA_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(prefix + '/'))) {
-    serveFile(res, join(DIST_DIR, 'index.html'));
+  if (SPA_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) {
+    serveFile(res, join(DIST_DIR, 'index.html'), pathname);
     return;
   }
 
   // Local static asset (matches dist/ prefix or extension) -> serve from dist/.
   if (isLocalStaticPath(pathname)) {
-    serveFile(res, filepath);
+    serveFile(res, filepath, pathname);
     return;
   }
 
   // Non-static, non-SPA path that exists on disk (e.g. a new asset extension
   // we haven't classified yet).
   if (existsSync(filepath) && statSync(filepath).isFile()) {
-    serveFile(res, filepath);
+    serveFile(res, filepath, pathname);
     return;
   }
 

@@ -28,12 +28,12 @@ export const UPSTREAM_PATCHES = [
   {
     id: 'login-signin-flow',
     file: 'app/public/src/pages/component/auth/login.tsx',
-    summary: 'Switches Firebase auth from popup to redirect flow so OAuth works inside WebView2 without iframe<->popup postMessage plumbing.',
+    summary: 'Keeps Firebase auth on popup flow so the main WebView does not leave the bundled client during OAuth; the Tauri popup bridge supplies FirebaseUI\'s window.open/window.opener contract.',
   },
   {
     id: 'login-no-redirect-after-auth',
     file: 'app/public/src/pages/component/auth/login.tsx',
-    summary: 'Returns false from FirebaseUI signInSuccessWithAuthResult so it does not re-navigate to signInSuccessUrl after a successful redirect-flow sign-in. Same-URL re-navigation would reload and interrupt Firebase IndexedDB auth persist, bouncing the user back to login.',
+    summary: 'Returns false from FirebaseUI signInSuccessWithAuthResult so React handles the authenticated state without an extra FirebaseUI navigation.',
   },
   {
     id: 'login-success-url',
@@ -50,7 +50,11 @@ export const UPSTREAM_PATCHES = [
     file: 'app/public/src/pages/component/servers/servers-list.tsx',
     summary: 'Keeps official-server detection stable when the client is served from the Tauri origin.',
   },
+  {
+    id: 'service-worker-cache-disable',
+    file: 'app/public/src/index.tsx',
+    summary: 'Unregisters the upstream cache-first service worker and clears CacheStorage so stale packaged-asset fallbacks cannot persist across PACDeluxe builds.',
+  },
 ];
 
 export const BUILD_MANIFEST_DOC = 'docs/PATCH_MANIFEST.md';
-

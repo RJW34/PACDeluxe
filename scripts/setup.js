@@ -14,10 +14,10 @@
  * Usage: node scripts/setup.js [--skip-upstream] [--dev]
  */
 
-import { execSync, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { execSync } from 'node:child_process';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -71,14 +71,6 @@ function exec(command, options = {}) {
   } catch (e) {
     return { success: false, error: e.message };
   }
-}
-
-function checkCommand(cmd, versionFlag = '--version') {
-  const result = spawnSync(cmd, [versionFlag], {
-    shell: true,
-    stdio: 'pipe',
-  });
-  return result.status === 0;
 }
 
 function getCommandVersion(cmd, versionFlag = '--version') {
@@ -239,7 +231,7 @@ async function main() {
 </body>
 </html>`;
 
-    const { writeFileSync } = await import('fs');
+    const { writeFileSync } = await import('node:fs');
     writeFileSync(join(distDir, 'index.html'), minimalHtml);
     success('Created placeholder dist folder');
   } else {
