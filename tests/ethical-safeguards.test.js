@@ -898,6 +898,12 @@ describe('Architecture Guardrails', () => {
       'release signing must fail clearly when the key password is missing'
     );
     assert.ok(
+      signScript.includes('mkdtempSync') &&
+        signScript.includes("'-f'") &&
+        signScript.includes('delete env.TAURI_PRIVATE_KEY'),
+      'release signing must pass private keys through a temporary key file, not raw Windows argv'
+    );
+    assert.ok(
       verifyScript.includes('--require-signatures') &&
         verifyScript.includes('updater signature') &&
         verifyScript.includes('updater latest.json'),

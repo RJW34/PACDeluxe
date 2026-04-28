@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { assertExistingFile, getWindowsReleaseArtifacts } from './release-artifacts.js';
 
 function fail(message) {
@@ -32,6 +34,25 @@ function getSigningConfig() {
   return { privateKey, privateKeyPath, password };
 }
 
+function prepareSigningConfig(config) {
+  if (config.privateKeyPath) {
+    return {
+      privateKeyPath: config.privateKeyPath,
+      password: config.password,
+      cleanup: () => {},
+    };
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'pac-deluxe-tauri-key-'));
+  const privateKeyPath = join(tempDir, 'private.key');
+  writeFileSync(privateKeyPath, config.privateKey, 'utf-8');
+  return {
+    privateKeyPath,
+    password: config.password,
+    cleanup: () => rmSync(tempDir, { recursive: true, force: true }),
+  };
+}
+
 function extractSignature(stdout, artifactPath) {
   const lines = stdout
     .split(/\r?\n/)
@@ -60,22 +81,28 @@ function extractSignature(stdout, artifactPath) {
 
 function runSigner(artifactPath, config) {
   const npxBin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  const args = ['tauri', 'signer', 'sign'];
+  const args = [
+    'tauri',
+    'signer',
+    'sign',
+    '-f',
+    config.privateKeyPath,
+    '-p',
+    config.password,
+    artifactPath,
+  ];
 
-  if (config.privateKeyPath) {
-    args.push('-f', config.privateKeyPath);
-  } else {
-    args.push('-k', config.privateKey);
-  }
-  args.push('-p', config.password, artifactPath);
+  const env = {
+    ...process.env,
+    TAURI_PRIVATE_KEY_PASSWORD: config.password,
+  };
+  delete env.TAURI_PRIVATE_KEY;
+  delete env.TAURI_SIGNING_PRIVATE_KEY;
 
   const result = spawnSync(npxBin, args, {
     cwd: process.cwd(),
     encoding: 'utf-8',
-    env: {
-      ...process.env,
-      TAURI_PRIVATE_KEY_PASSWORD: config.password,
-    },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -92,13 +119,17 @@ function runSigner(artifactPath, config) {
   return extractSignature(result.stdout, artifactPath);
 }
 
-const config = getSigningConfig();
-const artifacts = getWindowsReleaseArtifacts();
+const config = prepareSigningConfig(getSigningConfig());
+try {
+  const artifacts = getWindowsReleaseArtifacts();
 
-for (const artifact of artifacts) {
-  assertExistingFile(artifact.path, `${artifact.kind} installer`);
-  const signature = runSigner(artifact.path, config);
-  const signaturePath = `${artifact.path}.sig`;
-  writeFileSync(signaturePath, signature, 'ascii');
-  console.log(`[release:sign] Wrote ${signaturePath}`);
+  for (const artifact of artifacts) {
+    assertExistingFile(artifact.path, `${artifact.kind} installer`);
+    const signature = runSigner(artifact.path, config);
+    const signaturePath = `${artifact.path}.sig`;
+    writeFileSync(signaturePath, signature, 'ascii');
+    console.log(`[release:sign] Wrote ${signaturePath}`);
+  }
+} finally {
+  config.cleanup();
 }
