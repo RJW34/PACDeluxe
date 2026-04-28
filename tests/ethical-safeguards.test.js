@@ -900,8 +900,9 @@ describe('Architecture Guardrails', () => {
     assert.ok(
       signScript.includes('mkdtempSync') &&
         signScript.includes("'-f'") &&
-        signScript.includes('delete env.TAURI_PRIVATE_KEY'),
-      'release signing must pass private keys through a temporary key file, not raw Windows argv'
+        signScript.includes('delete env.TAURI_PRIVATE_KEY') &&
+        !signScript.includes("'-p'"),
+      'release signing must pass secrets through a temporary key file/env, not raw Windows argv'
     );
     assert.ok(
       verifyScript.includes('--require-signatures') &&

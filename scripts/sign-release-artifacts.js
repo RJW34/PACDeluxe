@@ -87,8 +87,6 @@ function runSigner(artifactPath, config) {
     'sign',
     '-f',
     config.privateKeyPath,
-    '-p',
-    config.password,
     artifactPath,
   ];
 
